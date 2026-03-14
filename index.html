@@ -435,12 +435,13 @@ input[type=file]{display:none}
 // FIREBASE CONFIG — replace with your project credentials
 // ═══════════════════════════════════════════════════════════
 const FIREBASE_CONFIG = {
-  apiKey:            "REPLACE_WITH_YOUR_API_KEY",
-  authDomain:        "REPLACE_WITH_YOUR_PROJECT.firebaseapp.com",
-  projectId:         "REPLACE_WITH_YOUR_PROJECT_ID",
-  storageBucket:     "REPLACE_WITH_YOUR_PROJECT.appspot.com",
-  messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
-  appId:             "REPLACE_WITH_YOUR_APP_ID"
+  apiKey:            "AIzaSyCEGeR2FGJ78mMSltPEHouuLYCo2PgMvug",
+  authDomain:        "vehicle-tracking-eb4aa.firebaseapp.com",
+  projectId:         "vehicle-tracking-eb4aa",
+  storageBucket:     "vehicle-tracking-eb4aa.firebasestorage.app",
+  messagingSenderId: "219147510451",
+  appId:             "1:219147510451:web:7382307d3022a4fcc246c6",
+  measurementId:     "G-XLSPNES1HC"
 };
 // Photos are stored in localStorage only (not synced to Firestore due to size limits).
 // For photo cloud sync, enable Firebase Storage separately.
@@ -458,15 +459,17 @@ const DB = {
         firebase.initializeApp(FIREBASE_CONFIG);
         this._db = firebase.firestore();
         this._db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+        // Use a lightweight read for ping — less likely to be blocked by Firestore rules
         await Promise.race([
-          this._db.collection('_ping').doc('ping').set({ t: Date.now() }),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+          this._db.collection('_ping').doc('ping').get(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout after 5s')), 5000))
         ]);
         this._online = true;
         this._updateStatusUI(true);
         snack('Firebase connected — real-time sync active', 'ok');
       } catch(e) {
-        console.warn('Firebase unavailable, using localStorage:', e.message);
+        this._initError = e.message || String(e);
+        console.warn('Firebase unavailable:', this._initError);
         this._updateStatusUI(false);
       }
     }
@@ -2328,75 +2331,71 @@ function renderFirebaseTestPage() {
   const cfg = FIREBASE_CONFIG;
   const configured = !Object.values(cfg).some(v => v.startsWith('REPLACE'));
   const online = DB._online;
+  const initErr = DB._initError || '';
 
-  const statusBadge = (ok, label) =>
-    `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:50px;font-size:12px;font-weight:600;background:${ok?'#e6f4ea':'#fce8e6'};color:${ok?'#1e8e3e':'#d93025'}">
-      <span class="mi sm">${ok?'check_circle':'cancel'}</span>${label}</span>`;
-
-  const cfgRows = Object.entries(cfg).map(([k,v]) => {
-    const masked = v.startsWith('REPLACE') ? v : (k==='apiKey'||k==='appId'||k==='messagingSenderId' ? v.slice(0,6)+'••••••' : v);
-    const ok = !v.startsWith('REPLACE');
-    return `<tr>
-      <td style="font-family:var(--fm);font-size:12px;color:var(--md-on-surface-variant);padding:8px 12px">${k}</td>
-      <td style="font-family:var(--fm);font-size:12px;padding:8px 12px">${esc(masked)}</td>
-      <td style="padding:8px 12px">${statusBadge(ok, ok?'Set':'Missing')}</td>
-    </tr>`;
-  }).join('');
+  const statusCard = (color, icon, label, val, sub) =>
+    `<div class="kpi-card kpi-${color}">
+      <div class="kpi-icon"><span class="mi lg">${icon}</span></div>
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-val" style="font-size:18px">${val}</div>
+      <div class="kpi-sub">${sub}</div>
+    </div>`;
 
   return `
-  <!-- STATUS CARDS -->
   <div class="kpi-grid g3" style="margin-bottom:24px">
-    <div class="kpi-card ${configured?'kpi-green':'kpi-red'}">
-      <div class="kpi-icon"><span class="mi lg">settings</span></div>
-      <div class="kpi-label">Config Status</div>
-      <div class="kpi-val" style="font-size:18px">${configured?'Configured':'Not Configured'}</div>
-      <div class="kpi-sub">${configured?'All keys are set':'One or more keys missing'}</div>
-    </div>
-    <div class="kpi-card ${online?'kpi-green':'kpi-red'}">
-      <div class="kpi-icon"><span class="mi lg">cloud</span></div>
-      <div class="kpi-label">Connection</div>
-      <div class="kpi-val" style="font-size:18px">${online?'Online':'Offline'}</div>
-      <div class="kpi-sub">${online?'Firebase is reachable':'Cannot reach Firebase'}</div>
-    </div>
-    <div class="kpi-card kpi-blue">
-      <div class="kpi-icon"><span class="mi lg">science</span></div>
-      <div class="kpi-label">Test Suite</div>
-      <div class="kpi-val" style="font-size:18px" id="fb-test-summary">Ready</div>
-      <div class="kpi-sub">Run tests to check each operation</div>
-    </div>
+    ${statusCard(configured?'green':'red','settings','Config',configured?'Configured':'Not Set',configured?'All 6 keys present':'Fill in the form below')}
+    ${statusCard(online?'green':'red','cloud','Connection',online?'Connected':'Not Connected', online?'Firestore reachable': initErr ? esc(initErr.slice(0,60)) : 'Config not set')}
+    ${statusCard('blue','science','Tests','—','Run tests after connecting')}
   </div>
 
-  <!-- CONFIG TABLE -->
-  <div class="md-card" style="margin-bottom:20px">
+  <!-- ── FIREBASE CONFIG FORM ─────────────────────────── -->
+  <div class="md-card" style="margin-bottom:20px;${configured?'':'border:2px solid var(--md-primary)'}">
     <div class="card-header">
-      <div class="card-title"><span class="mi sm">vpn_key</span> Firebase Configuration</div>
-      ${!configured?`<button class="md-btn md-btn-filled sm" onclick="openFbConfigModal()"><span class="mi sm">edit</span> Setup Firebase</button>`:''}
+      <div class="card-title"><span class="mi sm">vpn_key</span> Firebase Configuration ${configured?'<span style="font-size:11px;color:var(--md-success);font-weight:400">✓ Saved</span>':''}</div>
     </div>
-    <div class="card-body np">
-      <table class="md-table" style="font-size:13px">
-        <thead><tr><th>Key</th><th>Value</th><th>Status</th></tr></thead>
-        <tbody>${cfgRows}</tbody>
-      </table>
+    <div class="card-body">
+      ${!configured ? `<div style="background:#e8f0fe;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#1557b0;line-height:1.8">
+        <b>How to get your Firebase config:</b><br>
+        1. Go to <b>console.firebase.google.com</b> → select your project<br>
+        2. Click ⚙️ <b>Project Settings</b> → scroll to <b>Your apps</b> → <b>SDK setup and configuration</b><br>
+        3. Copy the values from the <code>firebaseConfig</code> object and paste below<br>
+        4. Also make sure <b>Firestore Database</b> is created in your project (Build → Firestore Database)
+      </div>` : ''}
+      <div class="fgrid2">
+        ${['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].map(k => {
+          const v = cfg[k];
+          const isSet = !v.startsWith('REPLACE');
+          return `<div class="fgrp">
+            <label style="display:flex;justify-content:space-between">${k}
+              <span style="color:${isSet?'var(--md-success)':'var(--md-error)'}">
+                <span class="mi sm">${isSet?'check_circle':'radio_button_unchecked'}</span>
+              </span>
+            </label>
+            <input class="md-input" id="fbcfg-${k}"
+              value="${esc(isSet ? v : '')}"
+              placeholder="e.g. ${k==='apiKey'?'AIzaSy...':k==='authDomain'?'your-project.firebaseapp.com':k==='projectId'?'your-project-id':k==='storageBucket'?'your-project.appspot.com':k==='messagingSenderId'?'123456789':k==='appId'?'1:123:web:abc':''}">
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
+        <button class="md-btn md-btn-filled" onclick="saveFbConfig()">
+          <span class="mi sm">save</span> Save Config & Reconnect
+        </button>
+        <button class="md-btn md-btn-outlined" onclick="pasteFbConfigJson()">
+          <span class="mi sm">content_paste</span> Paste Full Config JSON
+        </button>
+        ${configured ? `<button class="md-btn md-btn-text" style="color:var(--md-error)" onclick="clearFbConfig()">
+          <span class="mi sm">delete</span> Clear Config
+        </button>` : ''}
+      </div>
+      <div style="font-size:11px;color:var(--md-on-surface-variant);margin-top:10px">
+        <span class="mi sm" style="font-size:14px;vertical-align:middle">info</span>
+        Config is saved in your browser's sessionStorage and applied on reload. To make it permanent, edit the FIREBASE_CONFIG block in the HTML file.
+      </div>
     </div>
   </div>
 
-  ${!configured ? `
-  <!-- SETUP GUIDE -->
-  <div class="md-card" style="margin-bottom:20px;border-left:4px solid var(--md-warning)">
-    <div class="card-header"><div class="card-title" style="color:var(--md-warning)"><span class="mi sm">warning</span> Firebase Not Configured</div></div>
-    <div class="card-body">
-      <p style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:16px">Follow these steps to connect Firebase:</p>
-      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--md-on-surface)">
-        <li>Go to <b>console.firebase.google.com</b> and create a project</li>
-        <li>Click <b>Add App → Web</b> and register the app</li>
-        <li>Copy the <b>firebaseConfig</b> object shown</li>
-        <li>Go to <b>Firestore Database → Create database</b> (start in test mode)</li>
-        <li>Click <b>"Setup Firebase"</b> above and paste your config values</li>
-      </ol>
-    </div>
-  </div>` : ''}
-
-  <!-- TEST PANEL -->
+  <!-- ── TEST PANEL ───────────────────────────────────── -->
   <div class="md-card" style="margin-bottom:20px">
     <div class="card-header">
       <div class="card-title"><span class="mi sm">science</span> Connection & CRUD Tests</div>
@@ -2408,69 +2407,70 @@ function renderFirebaseTestPage() {
       <div id="fb-test-results" style="padding:16px">
         <div style="text-align:center;padding:24px;color:var(--md-on-surface-variant);font-size:13px">
           <span class="mi lg" style="display:block;margin-bottom:8px;color:var(--md-outline)">science</span>
-          Click "Run All Tests" to verify Firebase connectivity
+          ${configured ? 'Click "Run All Tests" to verify Firebase connectivity' : 'Fill in Firebase config above first'}
         </div>
       </div>
     </div>
   </div>
 
-  <!-- LIVE DATA PREVIEW -->
+  <!-- ── LIVE DATA PREVIEW ────────────────────────────── -->
   <div class="md-card">
     <div class="card-header">
       <div class="card-title"><span class="mi sm">storage</span> Live Firestore Data</div>
-      <button class="md-btn md-btn-outlined sm" onclick="previewFirestoreData()" ${!configured?'disabled':''}>
+      <button class="md-btn md-btn-outlined sm" onclick="previewFirestoreData()" ${!online?'disabled':''}>
         <span class="mi sm">refresh</span> Refresh
       </button>
     </div>
     <div class="card-body" id="fb-data-preview">
-      <div style="text-align:center;padding:16px;color:var(--md-on-surface-variant);font-size:13px">Click Refresh to load live data from Firestore</div>
+      <div style="text-align:center;padding:16px;color:var(--md-on-surface-variant);font-size:13px">
+        ${online ? 'Click Refresh to load live data from Firestore' : 'Connect Firebase first'}
+      </div>
     </div>
   </div>`;
 }
 
-function openFbConfigModal() {
-  const cfg = FIREBASE_CONFIG;
-  openModal(`<div class="md-modal wide">
-    <div class="modal-head">
-      <div class="modal-title">Setup Firebase Configuration</div>
-      <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
-    </div>
-    <div class="modal-body">
-      <p style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:16px">
-        Paste your Firebase project config values below. Find them in Firebase Console → Project Settings → Your Apps → SDK setup.
-      </p>
-      ${['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].map(k=>`
-        <div class="fgrp">
-          <label>${k} <span class="required">*</span></label>
-          <input class="md-input" id="fbcfg-${k}" value="${esc(cfg[k].startsWith('REPLACE')?'':cfg[k])}" placeholder="${cfg[k]}">
-        </div>`).join('')}
-      <div style="background:var(--md-bg);border-radius:8px;padding:12px;font-size:12px;color:var(--md-on-surface-variant);margin-top:8px">
-        <span class="mi sm" style="color:var(--md-warning);vertical-align:middle">warning</span>
-        These values are saved in this HTML file's source. Do not share this file publicly.
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="md-btn md-btn-outlined" onclick="closeModal()">Cancel</button>
-      <button class="md-btn md-btn-filled" onclick="saveFbConfig()">Save & Reload</button>
-    </div>
-  </div>`);
+function pasteFbConfigJson() {
+  const raw = prompt('Paste your full firebaseConfig JSON object:');
+  if (!raw) return;
+  try {
+    // Extract the object even if it's wrapped in "const firebaseConfig = {...}"
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) { snack('Could not find a JSON object in the pasted text', 'err'); return; }
+    const obj = JSON.parse(match[0]);
+    const keys = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+    let filled = 0;
+    keys.forEach(k => {
+      if (obj[k]) {
+        const el = document.getElementById('fbcfg-' + k);
+        if (el) { el.value = obj[k]; filled++; }
+      }
+    });
+    snack(filled + ' of 6 fields filled from pasted config');
+  } catch(e) {
+    snack('Invalid JSON — ' + e.message, 'err');
+  }
+}
+
+function clearFbConfig() {
+  if (!confirm('Clear Firebase config? The page will reload.')) return;
+  sessionStorage.removeItem('vtp4_fbcfg');
+  location.reload();
 }
 
 function saveFbConfig() {
   const keys = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
   const vals = {};
   for (const k of keys) {
-    const v = (document.getElementById('fbcfg-'+k)?.value||'').trim();
-    if (!v) { snack('All fields are required','err'); return; }
+    const v = (document.getElementById('fbcfg-' + k)?.value || '').trim();
+    if (!v) { snack('All 6 fields are required', 'err'); return; }
     vals[k] = v;
   }
-  // Persist config to sessionStorage so it survives a reload within same tab
   sessionStorage.setItem('vtp4_fbcfg', JSON.stringify(vals));
-  snack('Config saved — reloading…');
-  setTimeout(() => location.reload(), 800);
+  snack('Config saved — reconnecting…');
+  setTimeout(() => location.reload(), 600);
 }
 
-// Apply any saved config from sessionStorage on load
+// Apply saved config from sessionStorage on every load
 (function applySessionConfig() {
   try {
     const saved = sessionStorage.getItem('vtp4_fbcfg');
@@ -2507,9 +2507,25 @@ async function runFirebaseTests() {
   log('Firebase config present', configured, configured ? 'All 6 keys are set' : 'One or more keys start with REPLACE_WITH_');
   if (!configured) { el.querySelector('div:last-child').remove(); return; }
 
-  // Test 2: DB._online
-  log('Firebase connection (DB._online)', DB._online, DB._online ? 'Ping to Firestore succeeded at boot' : 'Ping failed — check projectId and network');
-  if (!DB._online) { el.querySelector('div:last-child').remove(); return; }
+  // Test 2: DB._online — show exact error if failed
+  const initErr = DB._initError || '';
+  log('Firebase connection (DB._online)', DB._online,
+    DB._online
+      ? 'Connected — Firestore is reachable'
+      : 'Failed: ' + (initErr || 'unknown error') + '\n→ Common causes: wrong projectId, Firestore not enabled, or security rules blocking writes to _ping'
+  );
+
+  // Test 2b: even if ping failed, try a lightweight read to see if read-only works
+  if (!DB._online) {
+    try {
+      await DB._db.collection('_ping').doc('ping').get();
+      log('Firestore read-only access', true, 'Reads work — rules may be blocking writes. Allow write to _ping or change ping to a read');
+    } catch(e2) {
+      log('Firestore read-only access', false, e2.code + ': ' + e2.message);
+    }
+    el.querySelector('div:last-child') && el.querySelector('div:last-child').textContent === 'Running…' && el.querySelector('div:last-child').remove();
+    return;
+  }
 
   // Test 3: Write to _test collection
   try {
