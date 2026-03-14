@@ -434,14 +434,13 @@ input[type=file]{display:none}
 // ═══════════════════════════════════════════════════════════
 // FIREBASE CONFIG — replace with your project credentials
 // ═══════════════════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "AIzaSyCEGeR2FGJ78mMSltPEHouuLYCo2PgMvug",
-  authDomain: "vehicle-tracking-eb4aa.firebaseapp.com",
-  projectId: "vehicle-tracking-eb4aa",
-  storageBucket: "vehicle-tracking-eb4aa.firebasestorage.app",
-  messagingSenderId: "219147510451",
-  appId: "1:219147510451:web:7382307d3022a4fcc246c6",
-  measurementId: "G-XLSPNES1HC"
+const FIREBASE_CONFIG = {
+  apiKey:            "REPLACE_WITH_YOUR_API_KEY",
+  authDomain:        "REPLACE_WITH_YOUR_PROJECT.firebaseapp.com",
+  projectId:         "REPLACE_WITH_YOUR_PROJECT_ID",
+  storageBucket:     "REPLACE_WITH_YOUR_PROJECT.appspot.com",
+  messagingSenderId: "REPLACE_WITH_YOUR_SENDER_ID",
+  appId:             "REPLACE_WITH_YOUR_APP_ID"
 };
 // Photos are stored in localStorage only (not synced to Firestore due to size limits).
 // For photo cloud sync, enable Firebase Storage separately.
@@ -855,6 +854,7 @@ const NAV_CFG = {
       { id:'users', icon:'manage_accounts', label:'User Management' },
       { id:'dpc_centers', icon:'factory', label:'DPC Centers' },
       { id:'godown_centers', icon:'warehouse', label:'Godown Centers' },
+      { id:'firebase_test', icon:'cloud', label:'Firebase Test' },
     ]},
   ],
   entry: [
@@ -915,7 +915,7 @@ function goTo(page) {
   const TITLES = {
     dashboard:'Dashboard', analytics:'Analytics', all_vehicles:'All Vehicles',
     reports:'Reports', users:'User Management', dpc_centers:'DPC Centers',
-    godown_centers:'Godown Centers', dispatch:'Dispatch Vehicle',
+    godown_centers:'Godown Centers', dispatch:'Dispatch Vehicle', firebase_test:'Firebase Test',
     pending:'Pending Arrivals', dpc_dispatch:'Dispatch to Godown',
     confirmed:'DPC Confirmed', incoming:'Incoming Vehicles', delivered:'Delivered to Godown'
   };
@@ -957,6 +957,7 @@ function renderPage() {
   else if (p === 'users') { S.users=DB._lget('users'); html = renderUsersPage(); }
   else if (p === 'dpc_centers') { S.users=DB._lget('users'); html = renderDPCCentersPage(); }
   else if (p === 'godown_centers') { S.users=DB._lget('users'); html = renderGodownCentersPage(); }
+  else if (p === 'firebase_test') html = renderFirebaseTestPage();
   pb.innerHTML = `<div style="animation:fadeIn .25s ease">${html}</div>`;
   initCharts();
 }
@@ -2319,6 +2320,313 @@ function seedData() {
   await DB.init();
   seedData();
 })();
+
+// ═══════════════════════════════════════════════════════════
+// FIREBASE TEST PAGE
+// ═══════════════════════════════════════════════════════════
+function renderFirebaseTestPage() {
+  const cfg = FIREBASE_CONFIG;
+  const configured = !Object.values(cfg).some(v => v.startsWith('REPLACE'));
+  const online = DB._online;
+
+  const statusBadge = (ok, label) =>
+    `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:50px;font-size:12px;font-weight:600;background:${ok?'#e6f4ea':'#fce8e6'};color:${ok?'#1e8e3e':'#d93025'}">
+      <span class="mi sm">${ok?'check_circle':'cancel'}</span>${label}</span>`;
+
+  const cfgRows = Object.entries(cfg).map(([k,v]) => {
+    const masked = v.startsWith('REPLACE') ? v : (k==='apiKey'||k==='appId'||k==='messagingSenderId' ? v.slice(0,6)+'••••••' : v);
+    const ok = !v.startsWith('REPLACE');
+    return `<tr>
+      <td style="font-family:var(--fm);font-size:12px;color:var(--md-on-surface-variant);padding:8px 12px">${k}</td>
+      <td style="font-family:var(--fm);font-size:12px;padding:8px 12px">${esc(masked)}</td>
+      <td style="padding:8px 12px">${statusBadge(ok, ok?'Set':'Missing')}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <!-- STATUS CARDS -->
+  <div class="kpi-grid g3" style="margin-bottom:24px">
+    <div class="kpi-card ${configured?'kpi-green':'kpi-red'}">
+      <div class="kpi-icon"><span class="mi lg">settings</span></div>
+      <div class="kpi-label">Config Status</div>
+      <div class="kpi-val" style="font-size:18px">${configured?'Configured':'Not Configured'}</div>
+      <div class="kpi-sub">${configured?'All keys are set':'One or more keys missing'}</div>
+    </div>
+    <div class="kpi-card ${online?'kpi-green':'kpi-red'}">
+      <div class="kpi-icon"><span class="mi lg">cloud</span></div>
+      <div class="kpi-label">Connection</div>
+      <div class="kpi-val" style="font-size:18px">${online?'Online':'Offline'}</div>
+      <div class="kpi-sub">${online?'Firebase is reachable':'Cannot reach Firebase'}</div>
+    </div>
+    <div class="kpi-card kpi-blue">
+      <div class="kpi-icon"><span class="mi lg">science</span></div>
+      <div class="kpi-label">Test Suite</div>
+      <div class="kpi-val" style="font-size:18px" id="fb-test-summary">Ready</div>
+      <div class="kpi-sub">Run tests to check each operation</div>
+    </div>
+  </div>
+
+  <!-- CONFIG TABLE -->
+  <div class="md-card" style="margin-bottom:20px">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">vpn_key</span> Firebase Configuration</div>
+      ${!configured?`<button class="md-btn md-btn-filled sm" onclick="openFbConfigModal()"><span class="mi sm">edit</span> Setup Firebase</button>`:''}
+    </div>
+    <div class="card-body np">
+      <table class="md-table" style="font-size:13px">
+        <thead><tr><th>Key</th><th>Value</th><th>Status</th></tr></thead>
+        <tbody>${cfgRows}</tbody>
+      </table>
+    </div>
+  </div>
+
+  ${!configured ? `
+  <!-- SETUP GUIDE -->
+  <div class="md-card" style="margin-bottom:20px;border-left:4px solid var(--md-warning)">
+    <div class="card-header"><div class="card-title" style="color:var(--md-warning)"><span class="mi sm">warning</span> Firebase Not Configured</div></div>
+    <div class="card-body">
+      <p style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:16px">Follow these steps to connect Firebase:</p>
+      <ol style="font-size:13px;line-height:2;padding-left:20px;color:var(--md-on-surface)">
+        <li>Go to <b>console.firebase.google.com</b> and create a project</li>
+        <li>Click <b>Add App → Web</b> and register the app</li>
+        <li>Copy the <b>firebaseConfig</b> object shown</li>
+        <li>Go to <b>Firestore Database → Create database</b> (start in test mode)</li>
+        <li>Click <b>"Setup Firebase"</b> above and paste your config values</li>
+      </ol>
+    </div>
+  </div>` : ''}
+
+  <!-- TEST PANEL -->
+  <div class="md-card" style="margin-bottom:20px">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">science</span> Connection & CRUD Tests</div>
+      <button class="md-btn md-btn-filled sm" onclick="runFirebaseTests()" ${!configured?'disabled':''}>
+        <span class="mi sm">play_arrow</span> Run All Tests
+      </button>
+    </div>
+    <div class="card-body np">
+      <div id="fb-test-results" style="padding:16px">
+        <div style="text-align:center;padding:24px;color:var(--md-on-surface-variant);font-size:13px">
+          <span class="mi lg" style="display:block;margin-bottom:8px;color:var(--md-outline)">science</span>
+          Click "Run All Tests" to verify Firebase connectivity
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LIVE DATA PREVIEW -->
+  <div class="md-card">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">storage</span> Live Firestore Data</div>
+      <button class="md-btn md-btn-outlined sm" onclick="previewFirestoreData()" ${!configured?'disabled':''}>
+        <span class="mi sm">refresh</span> Refresh
+      </button>
+    </div>
+    <div class="card-body" id="fb-data-preview">
+      <div style="text-align:center;padding:16px;color:var(--md-on-surface-variant);font-size:13px">Click Refresh to load live data from Firestore</div>
+    </div>
+  </div>`;
+}
+
+function openFbConfigModal() {
+  const cfg = FIREBASE_CONFIG;
+  openModal(`<div class="md-modal wide">
+    <div class="modal-head">
+      <div class="modal-title">Setup Firebase Configuration</div>
+      <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:16px">
+        Paste your Firebase project config values below. Find them in Firebase Console → Project Settings → Your Apps → SDK setup.
+      </p>
+      ${['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'].map(k=>`
+        <div class="fgrp">
+          <label>${k} <span class="required">*</span></label>
+          <input class="md-input" id="fbcfg-${k}" value="${esc(cfg[k].startsWith('REPLACE')?'':cfg[k])}" placeholder="${cfg[k]}">
+        </div>`).join('')}
+      <div style="background:var(--md-bg);border-radius:8px;padding:12px;font-size:12px;color:var(--md-on-surface-variant);margin-top:8px">
+        <span class="mi sm" style="color:var(--md-warning);vertical-align:middle">warning</span>
+        These values are saved in this HTML file's source. Do not share this file publicly.
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="md-btn md-btn-outlined" onclick="closeModal()">Cancel</button>
+      <button class="md-btn md-btn-filled" onclick="saveFbConfig()">Save & Reload</button>
+    </div>
+  </div>`);
+}
+
+function saveFbConfig() {
+  const keys = ['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId'];
+  const vals = {};
+  for (const k of keys) {
+    const v = (document.getElementById('fbcfg-'+k)?.value||'').trim();
+    if (!v) { snack('All fields are required','err'); return; }
+    vals[k] = v;
+  }
+  // Persist config to sessionStorage so it survives a reload within same tab
+  sessionStorage.setItem('vtp4_fbcfg', JSON.stringify(vals));
+  snack('Config saved — reloading…');
+  setTimeout(() => location.reload(), 800);
+}
+
+// Apply any saved config from sessionStorage on load
+(function applySessionConfig() {
+  try {
+    const saved = sessionStorage.getItem('vtp4_fbcfg');
+    if (!saved) return;
+    const vals = JSON.parse(saved);
+    Object.assign(FIREBASE_CONFIG, vals);
+  } catch(e) {}
+})();
+
+async function runFirebaseTests() {
+  const el = document.getElementById('fb-test-results');
+  const summary = document.getElementById('fb-test-summary');
+  if (!el) return;
+
+  const results = [];
+  const log = (label, ok, detail='') => {
+    results.push({label, ok, detail});
+    el.innerHTML = results.map(r => `
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 16px;border-bottom:1px solid var(--md-outline-variant)">
+        <span class="mi sm" style="color:${r.ok?'var(--md-success)':'var(--md-error)'};margin-top:1px">${r.ok?'check_circle':'cancel'}</span>
+        <div>
+          <div style="font-size:13px;font-weight:500">${esc(r.label)}</div>
+          ${r.detail?`<div style="font-size:12px;color:var(--md-on-surface-variant);margin-top:2px">${esc(r.detail)}</div>`:''}
+        </div>
+      </div>`).join('') + `<div style="padding:12px 16px;font-size:12px;color:var(--md-on-surface-variant)">Running…</div>`;
+    const passed = results.filter(r=>r.ok).length;
+    if (summary) summary.textContent = passed + '/' + results.length + ' Passed';
+  };
+
+  el.innerHTML = '<div style="padding:24px;text-align:center;font-size:13px;color:var(--md-on-surface-variant)">Running tests…</div>';
+
+  // Test 1: Config check
+  const configured = !Object.values(FIREBASE_CONFIG).some(v => v.startsWith('REPLACE'));
+  log('Firebase config present', configured, configured ? 'All 6 keys are set' : 'One or more keys start with REPLACE_WITH_');
+  if (!configured) { el.querySelector('div:last-child').remove(); return; }
+
+  // Test 2: DB._online
+  log('Firebase connection (DB._online)', DB._online, DB._online ? 'Ping to Firestore succeeded at boot' : 'Ping failed — check projectId and network');
+  if (!DB._online) { el.querySelector('div:last-child').remove(); return; }
+
+  // Test 3: Write to _test collection
+  try {
+    await DB._db.collection('_test').doc('ping').set({ ts: Date.now(), by: 'firebase_test_tab' });
+    log('Firestore write (_test/ping)', true, 'Document written successfully');
+  } catch(e) {
+    log('Firestore write (_test/ping)', false, e.message);
+  }
+
+  // Test 4: Read back
+  try {
+    const snap = await DB._db.collection('_test').doc('ping').get();
+    const ok = snap.exists && snap.data().by === 'firebase_test_tab';
+    log('Firestore read (_test/ping)', ok, ok ? 'Document read back correctly' : 'Document missing or data mismatch');
+  } catch(e) {
+    log('Firestore read (_test/ping)', false, e.message);
+  }
+
+  // Test 5: Read users collection
+  try {
+    const snap = await DB._db.collection('users').get();
+    log('Firestore read (users collection)', true, snap.size + ' documents found');
+  } catch(e) {
+    log('Firestore read (users collection)', false, e.message + ' — check Firestore security rules');
+  }
+
+  // Test 6: Read vehicles collection
+  try {
+    const snap = await DB._db.collection('vehicles').get();
+    log('Firestore read (vehicles collection)', true, snap.size + ' documents found');
+  } catch(e) {
+    log('Firestore read (vehicles collection)', false, e.message);
+  }
+
+  // Test 7: Read dpcs collection
+  try {
+    const snap = await DB._db.collection('dpcs').get();
+    log('Firestore read (dpcs collection)', true, snap.size + ' documents found');
+  } catch(e) {
+    log('Firestore read (dpcs collection)', false, e.message);
+  }
+
+  // Test 8: Real-time listener
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Listener did not fire within 5s')), 5000);
+      const unsub = DB._db.collection('_test').onSnapshot(snap => {
+        clearTimeout(timeout);
+        unsub();
+        resolve(snap.size);
+      }, reject);
+    });
+    log('Firestore real-time listener', true, 'onSnapshot fired successfully');
+  } catch(e) {
+    log('Firestore real-time listener', false, e.message);
+  }
+
+  // Remove "Running..." footer
+  const last = el.querySelector('div:last-child');
+  if (last && last.textContent === 'Running…') last.remove();
+
+  const passed = results.filter(r=>r.ok).length;
+  const allOk = passed === results.length;
+  if (summary) summary.textContent = passed + '/' + results.length + ' Passed';
+  el.insertAdjacentHTML('beforeend', `
+    <div style="padding:14px 16px;background:${allOk?'#e6f4ea':'#fce8e6'};display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:${allOk?'#1e8e3e':'#d93025'}">
+      <span class="mi sm">${allOk?'check_circle':'error'}</span>
+      ${allOk ? 'All tests passed — Firebase is working correctly' : (passed + ' of ' + results.length + ' tests passed — see failures above')}
+    </div>`);
+}
+
+async function previewFirestoreData() {
+  const el = document.getElementById('fb-data-preview');
+  if (!el) return;
+  if (!DB._online) { el.innerHTML = '<p style="color:var(--md-error);font-size:13px;padding:8px">Firebase is offline — cannot load data.</p>'; return; }
+
+  el.innerHTML = '<p style="font-size:13px;color:var(--md-on-surface-variant);padding:8px">Loading…</p>';
+
+  const collections = ['users','vehicles','dpcs','godowns'];
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">';
+  for (const col of collections) {
+    try {
+      const snap = await DB._db.collection(col).limit(5).get();
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      html += `<div style="background:var(--md-bg);border-radius:8px;padding:12px">
+        <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--md-on-surface-variant);margin-bottom:8px">
+          ${col} (${snap.size} docs${snap.size===5?' — showing 5':''})
+        </div>`;
+      if (docs.length === 0) {
+        html += '<div style="font-size:12px;color:var(--md-on-surface-variant);font-style:italic">Empty collection</div>';
+      } else {
+        html += docs.map(d => {
+          const preview = col==='users'
+            ? `${d.name||'?'} · ${d.role||'?'} · ${d.active?'active':'inactive'}`
+            : col==='vehicles'
+            ? `${d.vehicleNumber||'?'} · ${d.dpcName||'?'}`
+            : col==='dpcs'
+            ? `${d.name||'?'} · ${d.location||'?'}`
+            : `${d.name||'?'} · ${d.location||'?'}`;
+          return `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--md-outline-variant);display:flex;justify-content:space-between;gap:8px">
+            <span style="font-family:var(--fm);color:var(--md-primary)">${esc(d.id.slice(0,10))}</span>
+            <span style="color:var(--md-on-surface-variant);text-align:right">${esc(preview)}</span>
+          </div>`;
+        }).join('');
+      }
+      html += '</div>';
+    } catch(e) {
+      html += `<div style="background:#fce8e6;border-radius:8px;padding:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--md-error);margin-bottom:4px">${col}</div>
+        <div style="font-size:12px;color:var(--md-error)">${esc(e.message)}</div>
+      </div>`;
+    }
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
 </script>
 </body>
 </html>
