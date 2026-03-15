@@ -1073,30 +1073,30 @@ function renderAdminDash() {
 
   const filterLabel={all:'All Vehicles',dispatched:'En Route',dpc:'At DPC',transit:'In Transit',delivered:'Delivered',delayed:'Delayed (4h+)',worry:'Worry (12h+)'}[S.vFilter]||'All';
 
-  return \`
+  return `
   <!-- KPI ROW 1: clickable filters -->
   <div class="kpi-grid g4">
-    \${kpiCard('blue','local_shipping','Total Vehicles',total,totalBags.toLocaleString()+' bags total','all')}
-    \${kpiCard('amber','pending','En Route / At DPC',dispatched+atDpc,dispatched+' dispatched · '+atDpc+' at DPC','dispatched')}
-    \${kpiCard('purple','send','In Transit to Godown',inTransit,'DPC cleared, moving out','transit')}
-    \${kpiCard('green','check_circle','Delivered',delivered,rate+'% delivery rate','delivered')}
+    ${kpiCard('blue','local_shipping','Total Vehicles',total,totalBags.toLocaleString()+' bags total','all')}
+    ${kpiCard('amber','pending','En Route / At DPC',dispatched+atDpc,dispatched+' dispatched · '+atDpc+' at DPC','dispatched')}
+    ${kpiCard('purple','send','In Transit to Godown',inTransit,'DPC cleared, moving out','transit')}
+    ${kpiCard('green','check_circle','Delivered',delivered,rate+'% delivery rate','delivered')}
   </div>
   <div class="kpi-grid g4" style="margin-top:-8px">
-    \${worried>0?kpiCard('red','crisis_alert','Worry List (12h+)',worried,'Needs immediate attention','worry'):kpiCard('red','warning','Delayed (4h+)',delayed,'Without movement','delayed')}
-    \${kpiCard('green','grain','Grade A Bags',gradeA.toLocaleString(),'Dispatched from DPCs','')}
-    \${kpiCard('blue','grain','Grade C Bags',gradeC.toLocaleString(),'Dispatched from DPCs','')}
-    \${kpiCard('teal','people','Active Officers',dpcUsers+godUsers,dpcUsers+' DPC · '+godUsers+' Godown','')}
+    ${worried>0?kpiCard('red','crisis_alert','Worry List (12h+)',worried,'Needs immediate attention','worry'):kpiCard('red','warning','Delayed (4h+)',delayed,'Without movement','delayed')}
+    ${kpiCard('green','grain','Grade A Bags',gradeA.toLocaleString(),'Dispatched from DPCs','')}
+    ${kpiCard('blue','grain','Grade C Bags',gradeC.toLocaleString(),'Dispatched from DPCs','')}
+    ${kpiCard('teal','people','Active Officers',dpcUsers+godUsers,dpcUsers+' DPC · '+godUsers+' Godown','')}
   </div>
 
-  \${worried>0?\`
+  ${worried>0?`
   <div style="background:#fce8e6;border:2px solid #d93025;border-radius:var(--r8);padding:12px 16px;margin-bottom:20px;display:flex;align-items:center;gap:10px">
     <span class="mi" style="color:#d93025;font-size:28px;animation:blink 1s infinite">crisis_alert</span>
     <div style="flex:1">
-      <div style="font-weight:600;color:#d93025;font-size:14px">\${worried} vehicle\${worried>1?'s':''} delayed 12+ hours — Immediate action required</div>
+      <div style="font-weight:600;color:#d93025;font-size:14px">${worried} vehicle${worried>1?'s':''} delayed 12+ hours — Immediate action required</div>
       <div style="font-size:12px;color:#b31412;margin-top:2px">These vehicles have had no movement for over 12 hours and need urgent follow-up</div>
     </div>
     <button class="md-btn md-btn-filled red sm" onclick="goTo('worry_list')">View Worry List →</button>
-  </div>\`:''}
+  </div>`:''}
 
   <div class="g65">
     <div>
@@ -1106,8 +1106,8 @@ function renderAdminDash() {
           <button class="md-btn md-btn-text sm" onclick="goTo('all_vehicles')">View All</button>
         </div>
         <div class="card-body">
-          \${[['Dispatched (en route to DPC)',dispatched,'pf-amber'],['At DPC (awaiting dispatch)',atDpc,'pf-blue'],['DPC Dispatched (in transit)',inTransit,'pf-purple'],['Delivered to Godown',delivered,'pf-green'],delayed>0?['⚠ Delayed (4h+)',delayed,'pf-red']:null,worried>0?['🆘 Worry (12h+)',worried,'pf-red']:null].filter(Boolean).map(([lbl,cnt,cls])=>\`
-          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl" style="\${cls==='pf-red'?'color:var(--md-error)':''}">\${lbl}</span><span class="prog-cnt" style="\${cls==='pf-red'?'color:var(--md-error)':''}">\${cnt}</span></div><div class="prog-bar"><div class="prog-fill \${cls}" style="width:\${total>0?Math.round(cnt/total*100):0}%"></div></div></div>\`).join('')}
+          ${[['Dispatched (en route to DPC)',dispatched,'pf-amber'],['At DPC (awaiting dispatch)',atDpc,'pf-blue'],['DPC Dispatched (in transit)',inTransit,'pf-purple'],['Delivered to Godown',delivered,'pf-green'],delayed>0?['⚠ Delayed (4h+)',delayed,'pf-red']:null,worried>0?['🆘 Worry (12h+)',worried,'pf-red']:null].filter(Boolean).map(([lbl,cnt,cls])=>`
+          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl" style="${cls==='pf-red'?'color:var(--md-error)':''}">${lbl}</span><span class="prog-cnt" style="${cls==='pf-red'?'color:var(--md-error)':''}">${cnt}</span></div><div class="prog-bar"><div class="prog-fill ${cls}" style="width:${total>0?Math.round(cnt/total*100):0}%"></div></div></div>`).join('')}
         </div>
       </div>
 
@@ -1116,14 +1116,14 @@ function renderAdminDash() {
         <div class="card-header" style="flex-wrap:wrap;gap:8px">
           <div class="card-title" style="display:flex;align-items:center;gap:8px">
             <span class="mi sm">table_view</span>
-            <span>\${filterLabel}</span>
-            <span style="background:var(--md-primary-light);color:var(--md-primary);padding:2px 8px;border-radius:var(--r50);font-size:11px;font-weight:700">\${tableVehicles.length}</span>
-            \${S.vFilter!=='all'?\`<button class="md-btn md-btn-text xs" onclick="setVFilter('all')" style="color:var(--md-error);padding:0 6px">✕ Clear filter</button>\`:''}
+            <span>${filterLabel}</span>
+            <span style="background:var(--md-primary-light);color:var(--md-primary);padding:2px 8px;border-radius:var(--r50);font-size:11px;font-weight:700">${tableVehicles.length}</span>
+            ${S.vFilter!=='all'?`<button class="md-btn md-btn-text xs" onclick="setVFilter('all')" style="color:var(--md-error);padding:0 6px">✕ Clear filter</button>`:''}
           </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <div class="search-wrap"><span class="mi search-icon">search</span><input class="md-input" placeholder="Search…" value="\${esc(S.search)}" oninput="S.search=this.value;S.vPage=1;renderPage()" style="height:32px;font-size:12px;width:160px"></div>
+            <div class="search-wrap"><span class="mi search-icon">search</span><input class="md-input" placeholder="Search…" value="${esc(S.search)}" oninput="S.search=this.value;S.vPage=1;renderPage()" style="height:32px;font-size:12px;width:160px"></div>
             <select class="md-select" onchange="S.vPageSize=+this.value;S.vPage=1;renderPage()" style="height:32px;font-size:12px;width:80px">
-              \${[10,15,25,50].map(n=>\`<option value="\${n}" \${S.vPageSize===n?'selected':''}>\${n} / page</option>\`).join('')}
+              ${[10,15,25,50].map(n=>`<option value="${n}" ${S.vPageSize===n?'selected':''}>${n} / page</option>`).join('')}
             </select>
             <button class="md-btn md-btn-outlined sm" onclick="exportCSV()"><span class="mi sm">download</span> CSV</button>
             <button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch</button>
@@ -1132,56 +1132,56 @@ function renderAdminDash() {
         <div class="card-body np">
           <div class="tw"><table class="md-table">
             <thead><tr>
-              \${sortTh('vehicleNumber','Vehicle')}
-              \${sortTh('driverName','Driver')}
-              \${sortTh('dpcName','DPC')}
-              \${sortTh('unloadingPoint','Godown')}
-              \${sortTh('bags','Bags')}
+              ${sortTh('vehicleNumber','Vehicle')}
+              ${sortTh('driverName','Driver')}
+              ${sortTh('dpcName','DPC')}
+              ${sortTh('unloadingPoint','Godown')}
+              ${sortTh('bags','Bags')}
               <th>Status</th>
               <th>Delay</th>
               <th style="text-align:right">Action</th>
             </tr></thead>
             <tbody>
-              \${pageVehicles.length===0?\`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--md-on-surface-variant)">No vehicles match this filter</td></tr>\`:''}
-              \${pageVehicles.map(x=>{
+              ${pageVehicles.length===0?`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--md-on-surface-variant)">No vehicles match this filter</td></tr>`:''}
+              ${pageVehicles.map(x=>{
                 const st=statusOf(x);
                 const del=isDelayed(x), wor=isWorry(x);
                 const hrs=getDelayHours(x);
-                const delayCell=x.godownArrival?'<span style="color:var(--md-success);font-size:11px">✓ Done</span>':hrs>0?\`<span style="color:\${wor?'#d93025':'#e37400'};font-weight:600;font-size:12px">\${hrs}h \${wor?'🆘':'⚠'}</span>\`:'<span style="color:var(--md-on-surface-variant);font-size:11px">—</span>';
-                return \`<tr style="\${wor?'background:#fff8f8':del?'background:#fffdf0':''}">
-                  <td class="vnum-cell" onclick="openView('\${x.id}')" style="cursor:pointer">\${esc(x.vehicleNumber)}</td>
-                  <td>\${esc(x.driverName)}<div style="font-size:11px;color:var(--md-on-surface-variant)">\${esc(x.driverMobile)}</div></td>
-                  <td style="font-size:12px">\${esc(x.dpcName)}</td>
-                  <td style="font-size:12px">\${esc(x.unloadingPoint)}</td>
-                  <td style="font-family:var(--fm)">\${x.bags}</td>
-                  <td><span class="chip \${st.cls}">\${st.text}</span></td>
-                  <td>\${delayCell}</td>
+                const delayCell=x.godownArrival?'<span style="color:var(--md-success);font-size:11px">✓ Done</span>':hrs>0?`<span style="color:${wor?'#d93025':'#e37400'};font-weight:600;font-size:12px">${hrs}h ${wor?'🆘':'⚠'}</span>`:'<span style="color:var(--md-on-surface-variant);font-size:11px">—</span>';
+                return `<tr style="${wor?'background:#fff8f8':del?'background:#fffdf0':''}">
+                  <td class="vnum-cell" onclick="openView('${x.id}')" style="cursor:pointer">${esc(x.vehicleNumber)}</td>
+                  <td>${esc(x.driverName)}<div style="font-size:11px;color:var(--md-on-surface-variant)">${esc(x.driverMobile)}</div></td>
+                  <td style="font-size:12px">${esc(x.dpcName)}</td>
+                  <td style="font-size:12px">${esc(x.unloadingPoint)}</td>
+                  <td style="font-family:var(--fm)">${x.bags}</td>
+                  <td><span class="chip ${st.cls}">${st.text}</span></td>
+                  <td>${delayCell}</td>
                   <td class="action-cell">
-                    <button class="md-btn md-btn-text xs" onclick="openView('\${x.id}')">View</button>
-                    <button class="md-btn md-btn-text xs" style="color:var(--md-error)" onclick="deleteVehicle('\${x.id}')"><span class="mi sm">delete</span></button>
+                    <button class="md-btn md-btn-text xs" onclick="openView('${x.id}')">View</button>
+                    <button class="md-btn md-btn-text xs" style="color:var(--md-error)" onclick="deleteVehicle('${x.id}')"><span class="mi sm">delete</span></button>
                   </td>
-                </tr>\`;
+                </tr>`;
               }).join('')}
             </tbody>
           </table></div>
         </div>
         <!-- PAGINATION -->
-        \${totalPages>1?\`
+        ${totalPages>1?`
         <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--md-outline-variant);flex-wrap:wrap;gap:8px">
           <div style="font-size:12px;color:var(--md-on-surface-variant)">
-            Showing \${((S.vPage-1)*S.vPageSize)+1}–\${Math.min(S.vPage*S.vPageSize,tableVehicles.length)} of \${tableVehicles.length}
+            Showing ${((S.vPage-1)*S.vPageSize)+1}–${Math.min(S.vPage*S.vPageSize,tableVehicles.length)} of ${tableVehicles.length}
           </div>
           <div style="display:flex;gap:4px;align-items:center">
-            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=1;renderPage()" \${S.vPage===1?'disabled':''}>«</button>
-            <button class="md-btn md-btn-outlined xs" onclick="S.vPage--;renderPage()" \${S.vPage===1?'disabled':''}>‹</button>
-            \${Array.from({length:Math.min(5,totalPages)},(_,i)=>{
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=1;renderPage()" ${S.vPage===1?'disabled':''}>«</button>
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage--;renderPage()" ${S.vPage===1?'disabled':''}>‹</button>
+            ${Array.from({length:Math.min(5,totalPages)},(_,i)=>{
               let pg; if(totalPages<=5){pg=i+1;}else if(S.vPage<=3){pg=i+1;}else if(S.vPage>=totalPages-2){pg=totalPages-4+i;}else{pg=S.vPage-2+i;}
-              return \`<button class="md-btn \${pg===S.vPage?'md-btn-filled':'md-btn-outlined'} xs" onclick="S.vPage=\${pg};renderPage()">\${pg}</button>\`;
+              return `<button class="md-btn ${pg===S.vPage?'md-btn-filled':'md-btn-outlined'} xs" onclick="S.vPage=${pg};renderPage()">${pg}</button>`;
             }).join('')}
-            <button class="md-btn md-btn-outlined xs" onclick="S.vPage++;renderPage()" \${S.vPage===totalPages?'disabled':''}>›</button>
-            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=\${totalPages};renderPage()" \${S.vPage===totalPages?'disabled':''}>»</button>
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage++;renderPage()" ${S.vPage===totalPages?'disabled':''}>›</button>
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=${totalPages};renderPage()" ${S.vPage===totalPages?'disabled':''}>»</button>
           </div>
-        </div>\`:''}
+        </div>`:''}
       </div>
     </div>
 
@@ -1192,10 +1192,10 @@ function renderAdminDash() {
           <div class="donut-wrap">
             <canvas id="ch-donut" class="donut-canvas"></canvas>
             <div class="donut-legend">
-              <div class="dl-item"><div class="dl-dot" style="background:#e37400"></div><span class="dl-name">Dispatched</span><span class="dl-val">\${dispatched}</span></div>
-              <div class="dl-item"><div class="dl-dot" style="background:#1a73e8"></div><span class="dl-name">At DPC</span><span class="dl-val">\${atDpc}</span></div>
-              <div class="dl-item"><div class="dl-dot" style="background:#7b1fa2"></div><span class="dl-name">In Transit</span><span class="dl-val">\${inTransit}</span></div>
-              <div class="dl-item"><div class="dl-dot" style="background:#1e8e3e"></div><span class="dl-name">Delivered</span><span class="dl-val">\${delivered}</span></div>
+              <div class="dl-item"><div class="dl-dot" style="background:#e37400"></div><span class="dl-name">Dispatched</span><span class="dl-val">${dispatched}</span></div>
+              <div class="dl-item"><div class="dl-dot" style="background:#1a73e8"></div><span class="dl-name">At DPC</span><span class="dl-val">${atDpc}</span></div>
+              <div class="dl-item"><div class="dl-dot" style="background:#7b1fa2"></div><span class="dl-name">In Transit</span><span class="dl-val">${inTransit}</span></div>
+              <div class="dl-item"><div class="dl-dot" style="background:#1e8e3e"></div><span class="dl-name">Delivered</span><span class="dl-val">${delivered}</span></div>
             </div>
           </div>
         </div>
@@ -1203,19 +1203,19 @@ function renderAdminDash() {
       <div class="md-card" style="margin-bottom:20px">
         <div class="card-header"><div class="card-title"><span class="mi sm">factory</span> Top DPCs</div></div>
         <div class="card-body"><div class="rank-list">
-          \${topDpcs.map(([n,c],i)=>\`<div class="rank-item" onclick="S.search='\${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">\${i+1}</div><div class="rank-label" title="\${esc(n)}">\${esc(n)}</div><div class="rank-val">\${c}</div></div>\`).join('')}
-          \${topDpcs.length===0?\`<div class="empty-state" style="padding:16px"><p>No data</p></div>\`:''}
+          ${topDpcs.map(([n,c],i)=>`<div class="rank-item" onclick="S.search='${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
+          ${topDpcs.length===0?`<div class="empty-state" style="padding:16px"><p>No data</p></div>`:''}
         </div></div>
       </div>
       <div class="md-card">
         <div class="card-header"><div class="card-title"><span class="mi sm">warehouse</span> Top Godowns</div></div>
         <div class="card-body"><div class="rank-list">
-          \${topGods.map(([n,c],i)=>\`<div class="rank-item" onclick="S.search='\${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">\${i+1}</div><div class="rank-label" title="\${esc(n)}">\${esc(n)}</div><div class="rank-val">\${c}</div></div>\`).join('')}
-          \${topGods.length===0?\`<div class="empty-state" style="padding:16px"><p>No data</p></div>\`:''}
+          ${topGods.map(([n,c],i)=>`<div class="rank-item" onclick="S.search='${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
+          ${topGods.length===0?`<div class="empty-state" style="padding:16px"><p>No data</p></div>`:''}
         </div></div>
       </div>
     </div>
-  </div>\`;
+  </div>`;
 }
 
 function setVSort(col) {
