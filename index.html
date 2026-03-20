@@ -387,10 +387,14 @@ tr.worry-row{background:#fff0f0}
     <div class="fgrp"><label>Password</label><input class="md-input" type="password" id="l-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div id="l-err" style="display:none;margin-bottom:12px" class="ferr"><span class="mi sm">error</span><span id="l-err-text"></span></div>
     <button class="md-btn md-btn-filled" style="width:100%;margin-top:4px" onclick="doLogin()"><span class="mi sm">login</span> Sign In</button>
-    <div style="text-align:center;margin-top:10px">
+    <div style="text-align:center;margin-top:10px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
       <label style="cursor:pointer;font-size:12px;color:var(--md-primary);display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:var(--r50);border:1px solid var(--md-outline);background:transparent" title="Import user accounts shared by your Admin">
-        <span class="mi sm">upload_file</span> Import Users (Offline)
+        <span class="mi sm">person</span> Import Users
         <input type="file" id="import-users-file" accept=".vtp,.json,application/json,*/*" style="display:none" onchange="importUsersBundle(event)">
+      </label>
+      <label style="cursor:pointer;font-size:12px;color:var(--md-success);display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:var(--r50);border:1px solid #a8d5b5;background:transparent" title="Import ALL data shared by Admin">
+        <span class="mi sm" style="color:var(--md-success)">sync</span> Import All Data
+        <input type="file" id="import-full-file" accept=".vtp,.json,application/json,*/*" style="display:none" onchange="importFullBundle(event)">
       </label>
     </div>
     <div class="demo-hint" id="demo-hint">
@@ -548,8 +552,6 @@ const DB = {
 
   // ── init ─────────────────────────────────────────────────
   async init() {
-    // Firebase/Firestore connectivity not available on this network.
-    // App runs in local-only mode using localStorage + offline user import/export.
     this._online = false;
     this._updateStatusUI(false);
     return false;
@@ -560,7 +562,7 @@ const DB = {
     const txt = document.getElementById('fb-status-text');
     if (!el) return;
     el.className = 'fb-status ' + (online ? 'online' : 'offline');
-    txt.textContent = online ? 'Firebase Live' : 'Local';
+    txt.textContent = online ? 'Firebase Live' : 'Offline';
   },
 
   // ── localStorage helpers ──────────────────────────────────
@@ -1790,7 +1792,8 @@ function renderUsersPage() {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="md-btn md-btn-outlined sm" onclick="openAddUser('dpc')"><span class="mi sm">add</span> Add DPC Officer</button>
         <button class="md-btn md-btn-filled sm" onclick="openAddUser('godown')"><span class="mi sm">add</span> Add Godown Officer</button>
-        <button class="md-btn md-btn-outlined sm" onclick="exportUsersBundle()" title="Share user accounts to other devices (offline)"><span class="mi sm">share</span> Export for Offline</button>
+        <button class="md-btn md-btn-outlined sm" onclick="exportUsersBundle()" title="Share user accounts to other devices (offline)"><span class="mi sm">person</span> Export Users</button>
+        <button class="md-btn md-btn-filled green sm" onclick="exportFullBundle()" title="Export ALL data — vehicles, DPCs, godowns, users"><span class="mi sm">sync</span> Export All Data</button>
       </div>
     </div>
     <div class="card-body np"><div class="tw"><table class="md-table">
@@ -2197,26 +2200,11 @@ async function saveOfficer(editId) {
     record.godownName = godObj ? godObj.name : godId;
   }
 
-  // Pre-compute hash for immediate local cache (so this device also gets the hash right away)
-  const newPass = record.password;
-  const passwordHash = newPass
-    ? await hashPassword(newPass)
-    : (existing ? existing.passwordHash || '' : '');
-  const fullRecord = { ...record, passwordHash };
+  // saveUser handles hashing, localStorage, and Firestore write atomically
+  await DB.saveUser(record);
 
-  // Save user — hash stored in Firestore, plaintext cached locally
-  DB.saveUser(fullRecord).then(() => {
-    S.users = DB._lget('users');
-    if (['users','dpc_centers','godown_centers'].includes(S.page)) renderPage();
-  });
-
-  // Immediate local update for UI responsiveness
-  if (newPass) DB.savePassword(record.username, newPass);
-  const updatedUsers = allUsers.filter(u => u.id !== recordId);
-  updatedUsers.unshift(fullRecord);
-  DB._lset('users', updatedUsers);
-  closeModal();
   S.users = DB._lget('users');
+  closeModal();
   snack('Officer ' + (editId ? 'updated' : 'added') + ': ' + name);
   renderPage();
 }
@@ -2353,6 +2341,146 @@ async function importUsersBundle(event) {
         <div style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:8px">Imported accounts:</div>
         <div style="display:flex;flex-direction:column;gap:6px">
           ${importedNames.map(n=>`<div style="display:flex;align-items:center;gap:8px;font-size:13px"><span class="mi sm" style="color:var(--md-success)">person</span>${esc(n)}</div>`).join('')}
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="md-btn md-btn-filled" onclick="closeModal()">OK — Go to Login</button>
+      </div>
+    </div>`);
+  } catch(e) {
+    snack('Import failed: ' + e.message, 'err');
+  }
+}
+
+// ── Full data bundle export (vehicles + dpcs + godowns + users) ──────────
+async function exportFullBundle() {
+  const users     = DB._lget('users').map(u => ({
+    ...u, password: DB.getPassword(u.username) || u.password || ''
+  }));
+  const vehicles  = DB._lget('vehicles');
+  const dpcs      = DB._lget('dpcs');
+  const godowns   = DB._lget('godowns');
+
+  if (!users.length && !vehicles.length && !dpcs.length && !godowns.length) {
+    snack('Nothing to export yet', 'warn'); return;
+  }
+
+  const filename = 'vehicletrack-full-' + new Date().toISOString().slice(0,10) + '.vtp';
+  const bundle = {
+    version: 2, type: 'full',
+    exportedAt: new Date().toISOString(),
+    exportedBy: S.user ? S.user.name : 'Admin',
+    users, vehicles, dpcs, godowns
+  };
+
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/octet-stream' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+
+  openModal(`<div class="md-modal">
+    <div class="modal-head">
+      <div class="modal-title"><span class="mi sm" style="color:var(--md-success)">check_circle</span> Full Data Exported</div>
+      <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div style="background:#e6f4ea;border-radius:8px;padding:14px 16px;margin-bottom:16px">
+        <div style="font-weight:600;color:#137333;margin-bottom:4px">File: <span style="font-family:monospace">${filename}</span></div>
+        <div style="font-size:13px;color:#137333">
+          ${users.length} users · ${vehicles.length} vehicles · ${dpcs.length} DPCs · ${godowns.length} godowns
+        </div>
+      </div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:10px">Steps to sync another device:</div>
+      <div style="display:flex;flex-direction:column;gap:10px;font-size:13px">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">1</span>
+          <span>Find <b>${filename}</b> in your <b>Downloads</b> folder</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">2</span>
+          <span>Share via <b>WhatsApp / Bluetooth / USB / Email</b> to the officer's phone</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">3</span>
+          <span>Officer opens app → taps <b>"Import All Data"</b> on the login screen → done</span>
+        </div>
+      </div>
+      <div style="margin-top:14px;padding:10px 14px;background:var(--md-bg);border-radius:8px;font-size:12px;color:var(--md-on-surface-variant)">
+        <span class="mi sm" style="vertical-align:middle;font-size:14px">info</span>
+        Re-export and re-share whenever data changes. Each import merges new data without deleting existing records.
+      </div>
+    </div>
+    <div class="modal-foot"><button class="md-btn md-btn-filled" onclick="closeModal()">Done</button></div>
+  </div>`);
+}
+
+async function importFullBundle(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+
+  try {
+    const text   = await file.text();
+    const bundle = JSON.parse(text);
+
+    // Accept both full bundles (version 2) and user-only bundles (version 1)
+    const hasUsers    = Array.isArray(bundle.users);
+    const hasVehicles = Array.isArray(bundle.vehicles);
+    const hasDpcs     = Array.isArray(bundle.dpcs);
+    const hasGodowns  = Array.isArray(bundle.godowns);
+    if (!hasUsers && !hasVehicles) throw new Error('Invalid file — not a VehicleTrack export');
+
+    const counts = { users: 0, vehicles: 0, dpcs: 0, godowns: 0 };
+
+    // Merge users
+    if (hasUsers) {
+      const existing = DB._lget('users');
+      for (const u of bundle.users) {
+        if (!u.id || !u.username) continue;
+        if (u.password) {
+          DB.savePassword(u.username, u.password);
+          u.passwordHash = await hashPassword(u.password);
+        }
+        const idx = existing.findIndex(x => x.id === u.id);
+        if (idx >= 0) existing[idx] = u; else existing.unshift(u);
+        counts.users++;
+      }
+      DB._lset('users', existing);
+    }
+
+    // Merge collections (vehicles, dpcs, godowns)
+    for (const col of ['vehicles', 'dpcs', 'godowns']) {
+      if (!Array.isArray(bundle[col])) continue;
+      const existing = DB._lget(col);
+      for (const item of bundle[col]) {
+        if (!item.id) continue;
+        const idx = existing.findIndex(x => x.id === item.id);
+        if (idx >= 0) existing[idx] = item; else existing.unshift(item);
+        counts[col]++;
+      }
+      DB._lset(col, existing);
+    }
+
+    const summary = [
+      counts.users    && `${counts.users} users`,
+      counts.vehicles && `${counts.vehicles} vehicles`,
+      counts.dpcs     && `${counts.dpcs} DPCs`,
+      counts.godowns  && `${counts.godowns} godowns`,
+    ].filter(Boolean).join(' · ');
+
+    openModal(`<div class="md-modal">
+      <div class="modal-head">
+        <div class="modal-title"><span class="mi sm" style="color:var(--md-success)">check_circle</span> Import Successful</div>
+        <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
+      </div>
+      <div class="modal-body">
+        <div style="background:#e6f4ea;border-radius:8px;padding:14px 16px;margin-bottom:16px;font-size:14px;color:#137333">
+          <b>Imported:</b> ${summary || 'no records'}
+        </div>
+        <div style="font-size:13px;color:var(--md-on-surface-variant)">
+          All data has been loaded into this device. Log in with your username and password to get started.
         </div>
       </div>
       <div class="modal-foot">
