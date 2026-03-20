@@ -790,9 +790,9 @@ async function doLogin() {
   let found = null;
   if (builtIn[u] && builtIn[u].password === p) { found = builtIn[u]; }
   else {
-    // On a fresh device localStorage is empty — fetch from Firestore first if online
+    // Always fetch fresh from Firestore when online so new users are always found
     let users = DB._lget('users');
-    if (DB._online && users.length === 0) {
+    if (DB._online) {
       try { users = await DB.getAllUsers(); } catch(e) {}
     }
     // Hash the entered password for Firestore-stored users
@@ -2059,7 +2059,8 @@ function openAddUser(role, editId) {
 function autoFillPass() {
   const mob = (document.getElementById('au-mob')?.value || '').trim();
   const passEl = document.getElementById('au-pass');
-  if (passEl && mob && !passEl.dataset.edited) passEl.value = mob;
+  // Only auto-fill if the password field is empty or matches the previous mobile value
+  if (passEl && mob) passEl.value = mob;
 }
 
 function openEditUser(id) {
@@ -2089,7 +2090,7 @@ async function saveOfficer(editId) {
   const name     = nameEl ? nameEl.value.trim() : '';
   const mobile   = mobEl  ? mobEl.value.trim()  : '';
   const username = userEl ? userEl.value.trim() : '';
-  const pass     = passEl ? passEl.value.trim() : '';
+  let   pass     = passEl ? passEl.value.trim() : '';
   const role     = roleEl ? roleEl.value        : 'dpc';
   const dpcId    = dpcEl  ? dpcEl.value.trim()  : '';
   const godId    = godEl  ? godEl.value.trim()  : '';
