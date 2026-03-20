@@ -470,6 +470,12 @@ const DB = {
   async init() {
     const configured = !Object.values(FIREBASE_CONFIG).some(v => v.startsWith('REPLACE'));
     if (configured) {
+      if (typeof firebase === 'undefined') {
+        this._initError = 'Firebase SDK failed to load (check network / ad-blocker)';
+        console.warn('Firebase unavailable:', this._initError);
+        this._updateStatusUI(false);
+        return false;
+      }
       try {
         firebase.initializeApp(FIREBASE_CONFIG);
         this._db = firebase.firestore();
@@ -602,20 +608,28 @@ const DB = {
     this._notify(col);
   },
 
-  // ── User-specific Firestore CRUD (password stays in localStorage) ─────
+  // ── User-specific Firestore CRUD (passwordHash in Firestore, plaintext cached locally) ─────
   async saveUser(record) {
     // record must have: id, name, username, password, role, active, mobile
     // + dpcId/dpcName OR godownId/godownName
 
-    // 1. Store password locally only
-    this.savePassword(record.username, record.password);
+    // 1. Compute hash if a (new) plaintext password is provided
+    const plainPassword = record.password || '';
+    let passwordHash = record.passwordHash || '';
+    if (plainPassword && !record._skipHash) {
+      passwordHash = await hashPassword(plainPassword);
+    }
 
-    // 2. Build Firestore doc (no password)
+    // 2. Store plaintext password locally (for offline login on this device)
+    if (plainPassword) this.savePassword(record.username, plainPassword);
+
+    // 3. Build Firestore doc — hash stored, plaintext never sent
     const fsRecord = { ...record };
     delete fsRecord.id;
     delete fsRecord.password;
+    fsRecord.passwordHash = passwordHash;
 
-    // 3. Write to Firestore if online
+    // 4. Write to Firestore if online
     if (this._online) {
       try {
         await this._db.collection('users').doc(record.id).set(
@@ -625,14 +639,15 @@ const DB = {
       } catch(e) { console.warn('Firestore user save failed:', e); }
     }
 
-    // 4. Merge into localStorage cache (with password, for login)
+    // 5. Merge into localStorage cache (with plaintext + hash, for login on this device)
+    const fullRecord = { ...record, passwordHash };
     const local = this._lget('users');
     const idx = local.findIndex(u => u.id === record.id);
-    if (idx >= 0) local[idx] = record; else local.unshift(record);
+    if (idx >= 0) local[idx] = fullRecord; else local.unshift(fullRecord);
     this._lset('users', local);
 
     this._notify('users');
-    return record;
+    return fullRecord;
   },
 
   async deleteUser(id) {
@@ -651,7 +666,7 @@ const DB = {
     this._notify('users');
   },
 
-  // Load all users: fetch from Firestore, merge passwords from localStorage
+  // Load all users: fetch from Firestore (passwordHash included), merge plaintext from localStorage
   async getAllUsers() {
     let users = [];
     if (this._online) {
@@ -665,8 +680,12 @@ const DB = {
     } else {
       users = this._lget('users');
     }
-    // Attach passwords from localStorage
-    users = users.map(u => ({ ...u, password: this.getPassword(u.username) || u.password || '' }));
+    // Attach local plaintext password (for offline login on this device); keep passwordHash
+    users = users.map(u => ({
+      ...u,
+      password: this.getPassword(u.username) || u.password || '',
+      passwordHash: u.passwordHash || '',
+    }));
     // Update local cache
     this._lset('users', users);
     return users;
@@ -685,10 +704,14 @@ const DB = {
     }
   },
 
-  // Listen to users — reattach passwords from localStorage on every snapshot
+  // Listen to users — reattach plaintext from localStorage; passwordHash comes from Firestore
   listenUsers(cb) {
     const hydrate = (users) => {
-      const hydrated = users.map(u => ({ ...u, password: this.getPassword(u.username) || u.password || '' }));
+      const hydrated = users.map(u => ({
+        ...u,
+        password: this.getPassword(u.username) || u.password || '',
+        passwordHash: u.passwordHash || '',
+      }));
       this._lset('users', hydrated);
       cb(hydrated);
     };
@@ -769,6 +792,12 @@ function tlHtml(v) {
     <div class="tl-step"><div class="tl-dot ${s4}"></div><span class="tl-lbl ${s4}">Godown</span></div>
   </div>`;
 }
+// SHA-256 hash — used to store passwords in Firestore without plaintext
+async function hashPassword(pw) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
 function snack(msg, type='ok') {
   const c=document.getElementById('snacks');
   const el=document.createElement('div');
@@ -789,13 +818,13 @@ function selRole(r) {
   document.getElementById('l-pass').value = '';
   document.getElementById('l-err').style.display = 'none';
 }
-function doLogin() {
+async function doLogin() {
   const u = document.getElementById('l-user').value.trim();
   const p = document.getElementById('l-pass').value;
   const showErr = msg => { const el=document.getElementById('l-err'); el.style.display='flex'; document.getElementById('l-err-text').textContent=msg; };
   if (!u || !p) { showErr('Please enter username and password'); return; }
 
-  // Check built-in accounts first
+  // Check built-in accounts first (hardcoded — plaintext compare is fine here)
   const builtIn = {
     admin: { id:'admin', name:'Administrator', username:'admin', password:'Admin@123', role:'admin', active:true },
     entry: { id:'entry', name:'Entry Operator', username:'entry', password:'Entry@123', role:'entry', active:true }
@@ -804,7 +833,12 @@ function doLogin() {
   if (builtIn[u] && builtIn[u].password === p) { found = builtIn[u]; }
   else {
     const users = DB._lget('users');
-    found = users.find(x => x.username===u && x.password===p && x.active);
+    // Hash the entered password for Firestore-stored users
+    const ph = await hashPassword(p);
+    found = users.find(x => x.username === u && x.active && (
+      (x.passwordHash && x.passwordHash === ph) ||   // ✅ cross-device: hash match
+      (!x.passwordHash && x.password === p)          // 🔄 legacy fallback: plaintext (old users)
+    ));
   }
   if (!found) { showErr('Invalid username or password'); return; }
   // Auto-select the correct role tab based on the found user — no manual tab selection needed
@@ -2057,7 +2091,7 @@ function toggleAssignDropdown() {
   if (godW) godW.style.display = r === 'godown' ? '' : 'none';
 }
 
-function saveOfficer(editId) {
+async function saveOfficer(editId) {
   // Collect all form values while modal DOM is still alive
   const nameEl     = document.getElementById('au-name');
   const mobEl      = document.getElementById('au-mob');
@@ -2124,16 +2158,23 @@ function saveOfficer(editId) {
     record.godownName = godObj ? godObj.name : godId;
   }
 
-  // Save user — Firestore (no password) + password in localStorage
-  DB.saveUser(record).then(() => {
+  // Pre-compute hash for immediate local cache (so this device also gets the hash right away)
+  const newPass = record.password;
+  const passwordHash = newPass
+    ? await hashPassword(newPass)
+    : (existing ? existing.passwordHash || '' : '');
+  const fullRecord = { ...record, passwordHash };
+
+  // Save user — hash stored in Firestore, plaintext cached locally
+  DB.saveUser(fullRecord).then(() => {
     S.users = DB._lget('users');
     if (['users','dpc_centers','godown_centers'].includes(S.page)) renderPage();
   });
 
-  // Update local cache immediately, close modal and re-render without waiting
-  DB.savePassword(record.username, record.password);
+  // Immediate local update for UI responsiveness
+  if (newPass) DB.savePassword(record.username, newPass);
   const updatedUsers = allUsers.filter(u => u.id !== recordId);
-  updatedUsers.unshift(record);
+  updatedUsers.unshift(fullRecord);
   DB._lset('users', updatedUsers);
   closeModal();
   S.users = DB._lget('users');
