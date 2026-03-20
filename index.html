@@ -1727,12 +1727,13 @@ function renderUsersPage() {
       </div>
     </div>
     <div class="card-body np"><div class="tw"><table class="md-table">
-      <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Assigned To</th><th>Mobile</th><th>Status</th><th>Action</th></tr></thead>
+      <thead><tr><th>Name</th><th>Username</th><th>Password</th><th>Role</th><th>Assigned To</th><th>Mobile</th><th>Status</th><th>Action</th></tr></thead>
       <tbody>
-        ${users.length===0?`<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No officers added yet</td></tr>`:''}
+        ${users.length===0?`<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No officers added yet</td></tr>`:''}
         ${users.map(u=>`<tr>
           <td style="font-weight:500">${esc(u.name)}</td>
           <td style="font-family:var(--fm);font-size:12px">${esc(u.username)}</td>
+          <td style="font-family:var(--fm);font-size:12px;color:var(--md-primary)">${esc(DB.getPassword(u.username)||u.password||'—')}</td>
           <td><span class="chip ${u.role==='dpc'?'chip-dpc':'chip-godown'}">${u.role==='dpc'?'DPC':'Godown'}</span></td>
           <td>${esc(u.dpcName||u.godownName||'—')}</td>
           <td style="font-family:var(--fm);font-size:12px">${esc(u.mobile||'—')}</td>
@@ -2000,6 +2001,7 @@ function openAddUser(role, editId) {
   const allUsers = DB._lget('users');
   const editing = editId ? allUsers.find(u => u.id === editId) : null;
   const r = editing ? editing.role : role;
+  const currentPass = editing ? (DB.getPassword(editing.username) || editing.password || '') : '';
   const dpcOpts = allDpcs.map(d =>
     `<option value="${esc(d.id)}" ${editing && editing.dpcId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`
   ).join('');
@@ -2015,12 +2017,15 @@ function openAddUser(role, editId) {
       <div class="fgrid2">
         <div class="fgrp"><label>Full Name <span class="required">*</span></label>
           <input class="md-input" id="au-name" value="${esc(editing ? editing.name : '')}" placeholder="Officer full name"></div>
-        <div class="fgrp"><label>Mobile Number</label>
-          <input class="md-input" id="au-mob" value="${esc(editing ? editing.mobile || '' : '')}" placeholder="10-digit mobile"></div>
+        <div class="fgrp"><label>Mobile Number <span class="required">*</span></label>
+          <input class="md-input" id="au-mob" type="tel" value="${esc(editing ? editing.mobile || '' : '')}" placeholder="10-digit mobile" oninput="autoFillPass()"></div>
         <div class="fgrp"><label>Username <span class="required">*</span></label>
           <input class="md-input" id="au-user" value="${esc(editing ? editing.username : '')}" placeholder="Login username" ${editing ? 'readonly' : ''}></div>
-        <div class="fgrp"><label>Password ${editing ? '' : '<span class="required">*</span>'}</label>
-          <input class="md-input" type="password" id="au-pass" placeholder="${editing ? 'Leave blank to keep current' : 'Set password'}"></div>
+        <div class="fgrp">
+          <label>Password <span class="required">*</span></label>
+          <input class="md-input" type="text" id="au-pass" value="${esc(currentPass)}" placeholder="Auto-filled from mobile">
+          <div style="font-size:11px;color:var(--md-on-surface-variant);margin-top:4px"><span class="mi sm" style="font-size:13px;vertical-align:middle">info</span> Auto-set to mobile number. Edit to change.</div>
+        </div>
       </div>
       <div class="fgrp"><label>Role</label>
         <select class="md-select" id="au-role" onchange="toggleAssignDropdown()">
@@ -2049,6 +2054,12 @@ function openAddUser(role, editId) {
       <button class="md-btn md-btn-filled" onclick="saveOfficer('${editId || ''}')">Save Officer</button>
     </div>
   </div>`);
+}
+
+function autoFillPass() {
+  const mob = (document.getElementById('au-mob')?.value || '').trim();
+  const passEl = document.getElementById('au-pass');
+  if (passEl && mob && !passEl.dataset.edited) passEl.value = mob;
 }
 
 function openEditUser(id) {
@@ -2091,9 +2102,12 @@ async function saveOfficer(editId) {
   // Validation
   if (!name)                         { showErr('Full name is required'); return; }
   if (!username)                     { showErr('Username is required'); return; }
-  if (!editId && !pass)              { showErr('Password is required for new officers'); return; }
+  if (!mobile)                       { showErr('Mobile number is required'); return; }
   if (role === 'dpc'    && !dpcId)   { showErr('Please assign a DPC center'); return; }
   if (role === 'godown' && !godId)   { showErr('Please assign a Godown'); return; }
+
+  // If password left blank, use mobile as password
+  if (!pass) pass = mobile;
 
   // Read fresh data from localStorage
   const allUsers   = DB._lget('users');
