@@ -6,8 +6,7 @@
 <title>VehicleTrack Pro — Paddy Procurement Logistics</title>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<!-- Firestore accessed via REST API — no external SDK scripts needed -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -351,6 +350,21 @@ input[type=file]{display:none}
   .mob-menu-btn{display:flex!important}
 }
 .mob-menu-btn{display:none}
+.mob-menu-btn{display:none}
+/* Nav overlay backdrop */
+.nav-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:199}
+/* Pagination buttons */
+.md-btn.xs[disabled]{opacity:.35;pointer-events:none}
+/* Sortable table headers */
+.md-table thead th{cursor:default}
+/* Worry row highlight */
+tr.worry-row{background:#fff0f0}
+/* KPI card hover (clickable) */
+.kpi-card[onclick]:hover{transform:translateY(-2px);box-shadow:var(--md-elev2)}
+/* Control room summary strip */
+@media(max-width:640px){
+  .kpi-grid.g3{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -373,9 +387,15 @@ input[type=file]{display:none}
     <div class="fgrp"><label>Password</label><input class="md-input" type="password" id="l-pass" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div id="l-err" style="display:none;margin-bottom:12px" class="ferr"><span class="mi sm">error</span><span id="l-err-text"></span></div>
     <button class="md-btn md-btn-filled" style="width:100%;margin-top:4px" onclick="doLogin()"><span class="mi sm">login</span> Sign In</button>
+    <div style="text-align:center;margin-top:10px">
+      <label style="cursor:pointer;font-size:12px;color:var(--md-primary);display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:var(--r50);border:1px solid var(--md-outline);background:transparent" title="Import user accounts shared by your Admin">
+        <span class="mi sm">upload_file</span> Import Users (Offline)
+        <input type="file" id="import-users-file" accept=".vtp,.json,application/json,*/*" style="display:none" onchange="importUsersBundle(event)">
+      </label>
+    </div>
     <div class="demo-hint" id="demo-hint">
       Admin: <b>admin</b> / <span>Admin@123</span> &nbsp;·&nbsp; Entry: <b>entry</b> / <span>Entry@123</span><br>
-      <span style="font-size:11px;color:#9aa0a6">DPC &amp; Godown logins created by Admin</span>
+      <span style="font-size:11px;color:#9aa0a6">DPC &amp; Godown logins: created by Admin → Export for Offline → Import here</span>
     </div>
   </div>
 </div>
@@ -447,33 +467,92 @@ const FIREBASE_CONFIG = {
 // For photo cloud sync, enable Firebase Storage separately.
 
 // ═══════════════════════════════════════════════════════════
-// DATABASE LAYER  (Firestore + localStorage)
+// DATABASE LAYER  (Firestore REST API + localStorage)
+// No external SDK required — uses browser fetch() only
 // ═══════════════════════════════════════════════════════════
 const DB = {
-  _db: null, _online: false, _subs: [], _changeCallbacks: {},
+  _online: false, _subs: [], _changeCallbacks: {}, _initError: null,
 
-  async init() {
-    const configured = !Object.values(FIREBASE_CONFIG).some(v => v.startsWith('REPLACE'));
-    if (configured) {
-      try {
-        firebase.initializeApp(FIREBASE_CONFIG);
-        this._db = firebase.firestore();
-        this._db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
-        // Use a lightweight read for ping — less likely to be blocked by Firestore rules
-        await Promise.race([
-          this._db.collection('_ping').doc('ping').get(),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout after 5s')), 5000))
-        ]);
-        this._online = true;
-        this._updateStatusUI(true);
-        snack('Firebase connected — real-time sync active', 'ok');
-      } catch(e) {
-        this._initError = e.message || String(e);
-        console.warn('Firebase unavailable:', this._initError);
-        this._updateStatusUI(false);
-      }
+  // ── Firestore REST helpers ────────────────────────────────
+  _base() {
+    return `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents`;
+  },
+  async _req(method, path, body) {
+    const sep = path.includes('?') ? '&' : '?';
+    const url = `${this._base()}${path}${sep}key=${FIREBASE_CONFIG.apiKey}`;
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (res.status === 404) return null;
+    if (res.status === 204) return null;
+    if (!res.ok) { const t = await res.text(); throw new Error(`${res.status}: ${t.slice(0,200)}`); }
+    return res.json();
+  },
+
+  // Firestore value → JS
+  _fval(v) {
+    if ('stringValue'    in v) return v.stringValue;
+    if ('integerValue'   in v) return Number(v.integerValue);
+    if ('doubleValue'    in v) return v.doubleValue;
+    if ('booleanValue'   in v) return v.booleanValue;
+    if ('nullValue'      in v) return null;
+    if ('timestampValue' in v) return v.timestampValue;
+    if ('arrayValue'     in v) return (v.arrayValue.values || []).map(x => this._fval(x));
+    if ('mapValue'       in v) {
+      const o = {};
+      for (const [k, fv] of Object.entries(v.mapValue.fields || {})) o[k] = this._fval(fv);
+      return o;
     }
-    return this._online;
+    return null;
+  },
+  // JS → Firestore value
+  _tval(v) {
+    if (v === null || v === undefined) return { nullValue: null };
+    if (typeof v === 'boolean') return { booleanValue: v };
+    if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    if (typeof v === 'string') return { stringValue: v };
+    if (Array.isArray(v)) return { arrayValue: { values: v.map(x => this._tval(x)) } };
+    if (typeof v === 'object') {
+      const fields = {};
+      for (const [k, fv] of Object.entries(v)) if (fv !== undefined) fields[k] = this._tval(fv);
+      return { mapValue: { fields } };
+    }
+    return { stringValue: String(v) };
+  },
+  // Firestore document → plain JS object with id
+  _docToJs(doc) {
+    const id = doc.name.split('/').pop();
+    const obj = { id };
+    for (const [k, v] of Object.entries(doc.fields || {})) obj[k] = this._fval(v);
+    return obj;
+  },
+  // Plain JS object → Firestore fields map (strips id, nulls, base64 photos)
+  _jsToFields(data) {
+    const PHOTOS = ['dpcPhoto','godownPhoto','dpcDispatchPhoto'];
+    const fields = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (k === 'id') continue;
+      if (v === null || v === undefined) continue;
+      if (PHOTOS.includes(k) && typeof v === 'string' && v.startsWith('data:')) continue;
+      fields[k] = this._tval(v);
+    }
+    return fields;
+  },
+  // PATCH a document (merge: all listed fields are updated)
+  async _patch(path, fields) {
+    if (!Object.keys(fields).length) return;
+    const mask = Object.keys(fields).map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
+    // path has no query params yet; _req will add ?key=..., so we append mask via &
+    return this._req('PATCH', `${path}?${mask}`, { fields });
+  },
+
+  // ── init ─────────────────────────────────────────────────
+  async init() {
+    // Firebase/Firestore connectivity not available on this network.
+    // App runs in local-only mode using localStorage + offline user import/export.
+    this._online = false;
+    this._updateStatusUI(false);
+    return false;
   },
 
   _updateStatusUI(online) {
@@ -484,7 +563,7 @@ const DB = {
     txt.textContent = online ? 'Firebase Live' : 'Local';
   },
 
-  // ── localStorage helpers ──────────────────────────────────────────────
+  // ── localStorage helpers ──────────────────────────────────
   _lget(k) {
     try { return JSON.parse(localStorage.getItem('vtp4_' + k) || '[]'); } catch(e) { return []; }
   },
@@ -493,7 +572,6 @@ const DB = {
       localStorage.setItem('vtp4_' + k, JSON.stringify(d));
     } catch(e) {
       if (e.name === 'QuotaExceededError') {
-        // Free space by evicting vehicle photos, then retry
         try {
           const PHOTO_FIELDS = ['dpcPhoto','godownPhoto','dpcDispatchPhoto'];
           const vs = JSON.parse(localStorage.getItem('vtp4_vehicles') || '[]');
@@ -508,24 +586,18 @@ const DB = {
   },
   _lone(k, id) { return this._lget(k).find(x => x.id === id) || null; },
 
-  // ── Password store — localStorage only, keyed by username ─────────────
-  _pwKey(username) { return 'vtp4_pw_' + username; },
-  savePassword(username, password) {
-    try { localStorage.setItem(this._pwKey(username), password); } catch(e) {}
-  },
-  getPassword(username) {
-    return localStorage.getItem(this._pwKey(username)) || '';
-  },
-  deletePassword(username) {
-    try { localStorage.removeItem(this._pwKey(username)); } catch(e) {}
-  },
+  // ── Password store ────────────────────────────────────────
+  _pwKey(u) { return 'vtp4_pw_' + u; },
+  savePassword(u, p) { try { localStorage.setItem(this._pwKey(u), p); } catch(e) {} },
+  getPassword(u) { return localStorage.getItem(this._pwKey(u)) || ''; },
+  deletePassword(u) { try { localStorage.removeItem(this._pwKey(u)); } catch(e) {} },
 
-  // ── Generic Firestore + localStorage CRUD ────────────────────────────
+  // ── Generic CRUD ──────────────────────────────────────────
   async getAll(col) {
     if (this._online) {
       try {
-        const snap = await this._db.collection(col).get();
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const result = await this._req('GET', `/${col}`);
+        const data = (result?.documents || []).map(d => this._docToJs(d));
         this._lset(col, data);
         return data;
       } catch(e) { console.warn('Firestore getAll failed:', e); }
@@ -536,25 +608,16 @@ const DB = {
   async set(col, id, data) {
     const PHOTO_FIELDS = ['dpcPhoto','godownPhoto','dpcDispatchPhoto'];
 
-    // Build Firestore-safe copy (no photos, no nulls → deleteField)
-    const fsData = { ...data };
-    PHOTO_FIELDS.forEach(f => { if (fsData[f] && String(fsData[f]).startsWith('data:')) delete fsData[f]; });
-    if (this._online) {
-      Object.keys(fsData).forEach(k => {
-        if (fsData[k] === null) fsData[k] = firebase.firestore.FieldValue.delete();
-      });
-    }
-
     // Build localStorage copy (no photos, no nulls)
     const localItem = { id };
     Object.keys(data).forEach(k => {
-      if (data[k] !== null && !(PHOTO_FIELDS.includes(k) && String(data[k]).startsWith('data:'))) {
+      if (data[k] !== null && !(PHOTO_FIELDS.includes(k) && String(data[k]||'').startsWith('data:'))) {
         localItem[k] = data[k];
       }
     });
     localItem._updatedAt = Date.now();
 
-    // Save photos separately to avoid quota issues
+    // Save photos separately
     PHOTO_FIELDS.forEach(f => {
       if (data[f] && String(data[f]).startsWith('data:')) {
         try { localStorage.setItem('vtp4_photo_' + id + '_' + f, data[f]); } catch(_) {}
@@ -568,10 +631,8 @@ const DB = {
 
     if (this._online) {
       try {
-        await this._db.collection(col).doc(id).set(
-          { ...fsData, _updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
-          { merge: true }
-        );
+        const fields = this._jsToFields({ ...data, _updatedAt: Date.now() });
+        await this._patch(`/${col}/${id}`, fields);
       } catch(e) { console.warn('Firestore set failed:', e); }
     }
     this._notify(col);
@@ -582,67 +643,56 @@ const DB = {
     const local = this._lget(col).filter(x => x.id !== id);
     this._lset(col, local);
     if (this._online) {
-      try { await this._db.collection(col).doc(id).delete(); } catch(e) {}
+      try { await this._req('DELETE', `/${col}/${id}`); } catch(e) {}
     }
     this._notify(col);
   },
 
-  // ── User-specific Firestore CRUD (password stays in localStorage) ─────
+  // ── User CRUD (passwordHash in Firestore) ─────────────────
   async saveUser(record) {
-    // record must have: id, name, username, password, role, active, mobile
-    // + dpcId/dpcName OR godownId/godownName
+    const plainPassword = record.password || '';
+    let passwordHash = record.passwordHash || '';
+    if (plainPassword && !record._skipHash) {
+      passwordHash = await hashPassword(plainPassword);
+    }
+    if (plainPassword) this.savePassword(record.username, plainPassword);
 
-    // 1. Store password locally only
-    this.savePassword(record.username, record.password);
+    const fsRecord = { ...record, passwordHash };
+    delete fsRecord.id; delete fsRecord.password; delete fsRecord._skipHash;
 
-    // 2. Build Firestore doc (no password)
-    const fsRecord = { ...record };
-    delete fsRecord.id;
-    delete fsRecord.password;
-
-    // 3. Write to Firestore if online
     if (this._online) {
       try {
-        await this._db.collection('users').doc(record.id).set(
-          { ...fsRecord, _updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
-          { merge: true }
-        );
+        const fields = this._jsToFields(fsRecord);
+        await this._patch(`/users/${record.id}`, fields);
       } catch(e) { console.warn('Firestore user save failed:', e); }
     }
 
-    // 4. Merge into localStorage cache (with password, for login)
+    const fullRecord = { ...record, passwordHash };
     const local = this._lget('users');
     const idx = local.findIndex(u => u.id === record.id);
-    if (idx >= 0) local[idx] = record; else local.unshift(record);
+    if (idx >= 0) local[idx] = fullRecord; else local.unshift(fullRecord);
     this._lset('users', local);
-
     this._notify('users');
-    return record;
+    return fullRecord;
   },
 
   async deleteUser(id) {
-    // Remove password from localStorage
     const local = this._lget('users');
     const u = local.find(x => x.id === id);
     if (u) this.deletePassword(u.username);
-
-    // Remove from localStorage cache
     this._lset('users', local.filter(x => x.id !== id));
-
-    // Remove from Firestore
     if (this._online) {
-      try { await this._db.collection('users').doc(id).delete(); } catch(e) {}
+      try { await this._req('DELETE', `/users/${id}`); } catch(e) {}
     }
     this._notify('users');
   },
 
-  // Load all users: fetch from Firestore, merge passwords from localStorage
   async getAllUsers() {
     let users = [];
     if (this._online) {
       try {
-        const snap = await this._db.collection('users').get();
-        users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const result = await this._req('GET', '/users');
+        users = (result?.documents || []).map(d => this._docToJs(d));
       } catch(e) {
         console.warn('Firestore users fetch failed, using cache:', e);
         users = this._lget('users');
@@ -650,41 +700,55 @@ const DB = {
     } else {
       users = this._lget('users');
     }
-    // Attach passwords from localStorage
-    users = users.map(u => ({ ...u, password: this.getPassword(u.username) || u.password || '' }));
-    // Update local cache
+    users = users.map(u => ({
+      ...u,
+      password: this.getPassword(u.username) || u.password || '',
+      passwordHash: u.passwordHash || '',
+    }));
     this._lset('users', users);
     return users;
   },
 
+  // ── Polling-based live listeners (replaces Firestore SDK real-time) ───
   listen(col, cb) {
     cb(this._lget(col));
     this.onChange(col, cb);
     if (this._online) {
-      const unsub = this._db.collection(col).onSnapshot(snap => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        this._lset(col, data);
-        cb(data);
-      }, err => console.warn('Firestore listener error:', err));
-      this._subs.push(unsub);
+      const poll = async () => {
+        try {
+          const result = await this._req('GET', `/${col}`);
+          const data = (result?.documents || []).map(d => this._docToJs(d));
+          this._lset(col, data);
+          cb(data);
+        } catch(e) {}
+      };
+      const id = setInterval(poll, 15000); // refresh every 15 s
+      this._subs.push(() => clearInterval(id));
     }
   },
 
-  // Listen to users — reattach passwords from localStorage on every snapshot
   listenUsers(cb) {
-    const hydrate = (users) => {
-      const hydrated = users.map(u => ({ ...u, password: this.getPassword(u.username) || u.password || '' }));
+    const hydrate = users => {
+      const hydrated = users.map(u => ({
+        ...u,
+        password: this.getPassword(u.username) || u.password || '',
+        passwordHash: u.passwordHash || '',
+      }));
       this._lset('users', hydrated);
       cb(hydrated);
     };
     hydrate(this._lget('users'));
     this.onChange('users', cb);
     if (this._online) {
-      const unsub = this._db.collection('users').onSnapshot(snap => {
-        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        hydrate(data);
-      }, err => console.warn('Firestore users listener error:', err));
-      this._subs.push(unsub);
+      const poll = async () => {
+        try {
+          const result = await this._req('GET', '/users');
+          const data = (result?.documents || []).map(d => this._docToJs(d));
+          hydrate(data);
+        } catch(e) {}
+      };
+      const id = setInterval(poll, 15000);
+      this._subs.push(() => clearInterval(id));
     }
   },
 
@@ -704,7 +768,13 @@ let S = {
   vehicles: [], users: [], dpcs: [], godowns: [],
   page: 'dashboard', navCollapsed: false, alertOpen: false,
   search: '', tempPhoto: null,
-  charts: {}, changeListeners: []
+  charts: {}, changeListeners: [],
+  // Pagination & table state
+  vPage: 1, vPageSize: 15,
+  vSort: { col: '_dispatchMs', dir: 'desc' },
+  vFilter: 'all',   // all | dispatched | dpc | transit | delivered | delayed | worry
+  // Admin control panel
+  adminFilter: 'all',
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -724,6 +794,14 @@ function isDelayed(v) {
   if (v.godownArrival) return false;
   return (Date.now() - (v._dpcDispatchMs || v._dpcMs || v._dispatchMs || Date.now())) > 4*3600000;
 }
+function isWorry(v) {
+  if (v.godownArrival) return false;
+  return (Date.now() - (v._dpcDispatchMs || v._dpcMs || v._dispatchMs || Date.now())) > 12*3600000;
+}
+function getDelayHours(v) {
+  if (v.godownArrival) return 0;
+  return Math.floor((Date.now() - (v._dpcDispatchMs || v._dpcMs || v._dispatchMs || Date.now())) / 3600000);
+}
 function minToHM(m) { if (!m||m<=0) return '—'; if (m<60) return m+'m'; return Math.floor(m/60)+'h '+(m%60)+'m'; }
 function avgMs(arr) { if (!arr.length) return 0; return arr.reduce((a,b)=>a+b,0)/arr.length; }
 function tlHtml(v) {
@@ -740,6 +818,12 @@ function tlHtml(v) {
     <div class="tl-step"><div class="tl-dot ${s4}"></div><span class="tl-lbl ${s4}">Godown</span></div>
   </div>`;
 }
+// SHA-256 hash — used to store passwords in Firestore without plaintext
+async function hashPassword(pw) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
 function snack(msg, type='ok') {
   const c=document.getElementById('snacks');
   const el=document.createElement('div');
@@ -760,13 +844,13 @@ function selRole(r) {
   document.getElementById('l-pass').value = '';
   document.getElementById('l-err').style.display = 'none';
 }
-function doLogin() {
+async function doLogin() {
   const u = document.getElementById('l-user').value.trim();
   const p = document.getElementById('l-pass').value;
   const showErr = msg => { const el=document.getElementById('l-err'); el.style.display='flex'; document.getElementById('l-err-text').textContent=msg; };
   if (!u || !p) { showErr('Please enter username and password'); return; }
 
-  // Check built-in accounts first
+  // Check built-in accounts first (hardcoded — plaintext compare is fine here)
   const builtIn = {
     admin: { id:'admin', name:'Administrator', username:'admin', password:'Admin@123', role:'admin', active:true },
     entry: { id:'entry', name:'Entry Operator', username:'entry', password:'Entry@123', role:'entry', active:true }
@@ -774,10 +858,27 @@ function doLogin() {
   let found = null;
   if (builtIn[u] && builtIn[u].password === p) { found = builtIn[u]; }
   else {
-    const users = DB._lget('users');
-    found = users.find(x => x.username===u && x.password===p && x.active);
+    // On a fresh device localStorage is empty — fetch from Firestore first if online
+    let users = DB._lget('users');
+    if (DB._online && users.length === 0) {
+      try { users = await DB.getAllUsers(); } catch(e) {}
+    }
+    // Hash the entered password for Firestore-stored users
+    const ph = await hashPassword(p);
+    found = users.find(x => x.username === u && x.active && (
+      (x.passwordHash && x.passwordHash === ph) ||   // hash match (cross-device)
+      (x.password && x.password === p)               // plaintext match (always as fallback)
+    ));
   }
   if (!found) { showErr('Invalid username or password'); return; }
+
+  // Auto-migrate: if this user has no passwordHash in Firestore yet, write it now
+  // This ensures other devices can log in after the first login on any device
+  if (found.id !== 'admin' && found.id !== 'entry' && !found.passwordHash) {
+    const ph2 = await hashPassword(p);
+    DB.saveUser({ ...found, passwordHash: ph2, _skipHash: true });
+  }
+
   // Auto-select the correct role tab based on the found user — no manual tab selection needed
   _loginRole = found.role;
   document.querySelectorAll('.role-tab').forEach(t => t.classList.toggle('active', t.dataset.role===_loginRole));
@@ -859,6 +960,10 @@ const NAV_CFG = {
       { id:'godown_centers', icon:'warehouse', label:'Godown Centers' },
       { id:'firebase_test', icon:'cloud', label:'Firebase Test' },
     ]},
+    { sec:'Alerts', items:[
+      { id:'worry_list', icon:'crisis_alert', label:'Worry List', badge:'worry' },
+      { id:'control_room', icon:'control_camera', label:'Control Room' },
+    ]},
   ],
   entry: [
     { sec:'Operations', items:[
@@ -891,6 +996,7 @@ function getBadges() {
     dpc_pending: mv.filter(v=>!v.dpcArrival).length,
     dpc_dispatch_pending: mv.filter(v=>v.dpcArrival&&!v.dpcDispatched).length,
     godown_pending: mv.filter(v=>v.dpcDispatched&&!v.godownArrival).length,
+    worry: mv.filter(v=>isWorry(v)).length,
   };
 }
 
@@ -913,12 +1019,13 @@ function buildNav() {
 }
 
 function goTo(page) {
-  S.page = page;
+  S.vPage = 1;
   S.search = '';
+  S.page = page;
   const TITLES = {
     dashboard:'Dashboard', analytics:'Analytics', all_vehicles:'All Vehicles',
     reports:'Reports', users:'User Management', dpc_centers:'DPC Centers',
-    godown_centers:'Godown Centers', dispatch:'Dispatch Vehicle', firebase_test:'Firebase Test',
+    godown_centers:'Godown Centers', dispatch:'Dispatch Vehicle', firebase_test:'Firebase Test', worry_list:'⚠ Worry List (12h+)', control_room:'Control Room',
     pending:'Pending Arrivals', dpc_dispatch:'Dispatch to Godown',
     confirmed:'DPC Confirmed', incoming:'Incoming Vehicles', delivered:'Delivered to Godown'
   };
@@ -961,6 +1068,8 @@ function renderPage() {
   else if (p === 'dpc_centers') { S.users=DB._lget('users'); html = renderDPCCentersPage(); }
   else if (p === 'godown_centers') { S.users=DB._lget('users'); html = renderGodownCentersPage(); }
   else if (p === 'firebase_test') html = renderFirebaseTestPage();
+  else if (p === 'worry_list') html = renderWorryList();
+  else if (p === 'control_room') html = renderControlRoom();
   pb.innerHTML = `<div style="animation:fadeIn .25s ease">${html}</div>`;
   initCharts();
 }
@@ -971,6 +1080,22 @@ document.head.appendChild(styleTag);
 // ═══════════════════════════════════════════════════════════
 // ADMIN DASHBOARD
 // ═══════════════════════════════════════════════════════════
+function kpiCard(color, icon, label, val, sub, filterKey) {
+  const clickable = filterKey ? `onclick="setVFilter('${filterKey}')" style="cursor:pointer"` : '';
+  const active = S.vFilter === filterKey ? 'box-shadow:0 0 0 3px var(--md-primary);' : '';
+  return `<div class="kpi-card kpi-${color}" ${clickable} style="${active}transition:box-shadow .15s,transform .15s" onmouseenter="this.style.transform='translateY(-2px)'" onmouseleave="this.style.transform=''">
+    <div class="kpi-icon"><span class="mi lg">${icon}</span></div>
+    <div class="kpi-label">${label}${filterKey?`<span style="font-size:9px;margin-left:4px;opacity:.6">▶ click to filter</span>`:''}</div>
+    <div class="kpi-val">${val}</div>
+    <div class="kpi-sub">${sub}</div>
+  </div>`;
+}
+function setVFilter(f) {
+  S.vFilter = S.vFilter===f ? 'all' : f;
+  S.vPage = 1;
+  renderPage();
+}
+
 function renderAdminDash() {
   const v = S.vehicles;
   const total=v.length, dispatched=v.filter(x=>!x.dpcArrival).length;
@@ -978,42 +1103,72 @@ function renderAdminDash() {
   const inTransit=v.filter(x=>x.dpcDispatched&&!x.godownArrival).length;
   const delivered=v.filter(x=>x.godownArrival).length;
   const delayed=v.filter(x=>isDelayed(x)).length;
+  const worried=v.filter(x=>isWorry(x)).length;
   const totalBags=v.reduce((a,b)=>a+(+b.bags||0),0);
   const gradeA=v.filter(x=>x.gradeABags).reduce((a,b)=>a+(+b.gradeABags||0),0);
   const gradeC=v.filter(x=>x.gradeCBags).reduce((a,b)=>a+(+b.gradeCBags||0),0);
   const rate=total>0?Math.round(delivered/total*100):0;
-  const recent=[...v].sort((a,b)=>(b._dispatchMs||0)-(a._dispatchMs||0)).slice(0,6);
+  const dpcUsers=S.users.filter(u=>u.role==='dpc'&&u.active).length;
+  const godUsers=S.users.filter(u=>u.role==='godown'&&u.active).length;
   const dpcMap={}, godMap={};
   v.forEach(x=>{dpcMap[x.dpcName]=(dpcMap[x.dpcName]||0)+1;godMap[x.unloadingPoint]=(godMap[x.unloadingPoint]||0)+1;});
   const topDpcs=Object.entries(dpcMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const topGods=Object.entries(godMap).sort((a,b)=>b[1]-a[1]).slice(0,5);
-  const delayedList=v.filter(x=>isDelayed(x));
-  const dpcUsers=S.users.filter(u=>u.role==='dpc'&&u.active).length;
-  const godUsers=S.users.filter(u=>u.role==='godown'&&u.active).length;
+
+  // Filter vehicles for the bottom table
+  let tableVehicles = [...v];
+  if (S.vFilter==='dispatched') tableVehicles=v.filter(x=>!x.dpcArrival);
+  else if (S.vFilter==='dpc') tableVehicles=v.filter(x=>x.dpcArrival&&!x.dpcDispatched);
+  else if (S.vFilter==='transit') tableVehicles=v.filter(x=>x.dpcDispatched&&!x.godownArrival);
+  else if (S.vFilter==='delivered') tableVehicles=v.filter(x=>x.godownArrival);
+  else if (S.vFilter==='delayed') tableVehicles=v.filter(x=>isDelayed(x));
+  else if (S.vFilter==='worry') tableVehicles=v.filter(x=>isWorry(x));
+
+  // Sort
+  tableVehicles.sort((a,b)=>{
+    const {col,dir}=S.vSort;
+    let av=a[col]||0, bv=b[col]||0;
+    if(typeof av==='string') av=av.toLowerCase(), bv=String(bv).toLowerCase();
+    return dir==='asc'?(av>bv?1:-1):(av<bv?1:-1);
+  });
+
+  // Paginate
+  const totalPages = Math.max(1, Math.ceil(tableVehicles.length/S.vPageSize));
+  if(S.vPage>totalPages) S.vPage=totalPages;
+  const pageVehicles = tableVehicles.slice((S.vPage-1)*S.vPageSize, S.vPage*S.vPageSize);
+
+  const sortTh=(col,label)=>{
+    const active=S.vSort.col===col;
+    const icon=active?(S.vSort.dir==='asc'?'▲':'▼'):'↕';
+    return `<th onclick="setVSort('${col}')" style="cursor:pointer;white-space:nowrap;user-select:none">${label} <span style="opacity:${active?1:.35};font-size:10px">${icon}</span></th>`;
+  };
+
+  const filterLabel={all:'All Vehicles',dispatched:'En Route',dpc:'At DPC',transit:'In Transit',delivered:'Delivered',delayed:'Delayed (4h+)',worry:'Worry (12h+)'}[S.vFilter]||'All';
 
   return `
+  <!-- KPI ROW 1: clickable filters -->
   <div class="kpi-grid g4">
-    <div class="kpi-card kpi-blue"><div class="kpi-icon"><span class="mi lg">local_shipping</span></div><div class="kpi-label">Total Vehicles</div><div class="kpi-val">${total}</div><div class="kpi-sub">${totalBags.toLocaleString()} bags total</div></div>
-    <div class="kpi-card kpi-amber"><div class="kpi-icon"><span class="mi lg">pending</span></div><div class="kpi-label">En Route / At DPC</div><div class="kpi-val">${dispatched+atDpc}</div><div class="kpi-sub">${dispatched} dispatched · ${atDpc} at DPC</div></div>
-    <div class="kpi-card kpi-purple"><div class="kpi-icon"><span class="mi lg">send</span></div><div class="kpi-label">In Transit to Godown</div><div class="kpi-val">${inTransit}</div><div class="kpi-sub">DPC cleared, moving out</div></div>
-    <div class="kpi-card kpi-green"><div class="kpi-icon"><span class="mi lg">check_circle</span></div><div class="kpi-label">Delivered</div><div class="kpi-val">${delivered}</div><div class="kpi-sub">${rate}% delivery rate</div></div>
+    ${kpiCard('blue','local_shipping','Total Vehicles',total,totalBags.toLocaleString()+' bags total','all')}
+    ${kpiCard('amber','pending','En Route / At DPC',dispatched+atDpc,dispatched+' dispatched · '+atDpc+' at DPC','dispatched')}
+    ${kpiCard('purple','send','In Transit to Godown',inTransit,'DPC cleared, moving out','transit')}
+    ${kpiCard('green','check_circle','Delivered',delivered,rate+'% delivery rate','delivered')}
   </div>
   <div class="kpi-grid g4" style="margin-top:-8px">
-    <div class="kpi-card kpi-red"><div class="kpi-icon"><span class="mi lg">warning</span></div><div class="kpi-label">Delayed Vehicles</div><div class="kpi-val">${delayed}</div><div class="kpi-sub">4+ hrs without movement</div></div>
-    <div class="kpi-card kpi-green"><div class="kpi-icon"><span class="mi lg">grain</span></div><div class="kpi-label">Grade A Bags</div><div class="kpi-val">${gradeA.toLocaleString()}</div><div class="kpi-sub">Dispatched from DPCs</div></div>
-    <div class="kpi-card kpi-blue"><div class="kpi-icon"><span class="mi lg">grain</span></div><div class="kpi-label">Grade C Bags</div><div class="kpi-val">${gradeC.toLocaleString()}</div><div class="kpi-sub">Dispatched from DPCs</div></div>
-    <div class="kpi-card kpi-teal"><div class="kpi-icon"><span class="mi lg">people</span></div><div class="kpi-label">Active Officers</div><div class="kpi-val">${dpcUsers+godUsers}</div><div class="kpi-sub">${dpcUsers} DPC · ${godUsers} Godown</div></div>
+    ${worried>0?kpiCard('red','crisis_alert','Worry List (12h+)',worried,'Needs immediate attention','worry'):kpiCard('red','warning','Delayed (4h+)',delayed,'Without movement','delayed')}
+    ${kpiCard('green','grain','Grade A Bags',gradeA.toLocaleString(),'Dispatched from DPCs','')}
+    ${kpiCard('blue','grain','Grade C Bags',gradeC.toLocaleString(),'Dispatched from DPCs','')}
+    ${kpiCard('teal','people','Active Officers',dpcUsers+godUsers,dpcUsers+' DPC · '+godUsers+' Godown','')}
   </div>
 
-  ${delayedList.length>0?`
-  <div class="alert-list">
-    ${delayedList.slice(0,3).map(x=>`
-    <div class="alert-card error">
-      <span class="alert-icon">⚠️</span>
-      <div><div class="alert-title">${esc(x.vehicleNumber)} — Delayed (${esc(x.driverName)}, ${esc(x.driverMobile)})</div>
-      <div class="alert-desc">Last confirmed: ${x.dpcDispatched?'DPC Dispatched':x.dpcArrival?'DPC Arrived':'Dispatched'}. Godown: ${esc(x.unloadingPoint)}</div></div>
-    </div>`).join('')}
-  </div>`:``}
+  ${worried>0?`
+  <div style="background:#fce8e6;border:2px solid #d93025;border-radius:var(--r8);padding:12px 16px;margin-bottom:20px;display:flex;align-items:center;gap:10px">
+    <span class="mi" style="color:#d93025;font-size:28px;animation:blink 1s infinite">crisis_alert</span>
+    <div style="flex:1">
+      <div style="font-weight:600;color:#d93025;font-size:14px">${worried} vehicle${worried>1?'s':''} delayed 12+ hours — Immediate action required</div>
+      <div style="font-size:12px;color:#b31412;margin-top:2px">These vehicles have had no movement for over 12 hours and need urgent follow-up</div>
+    </div>
+    <button class="md-btn md-btn-filled red sm" onclick="goTo('worry_list')">View Worry List →</button>
+  </div>`:''}
 
   <div class="g65">
     <div>
@@ -1023,29 +1178,85 @@ function renderAdminDash() {
           <button class="md-btn md-btn-text sm" onclick="goTo('all_vehicles')">View All</button>
         </div>
         <div class="card-body">
-          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl">Dispatched (en route to DPC)</span><span class="prog-cnt">${dispatched}</span></div><div class="prog-bar"><div class="prog-fill pf-amber" style="width:${total>0?Math.round(dispatched/total*100):0}%"></div></div></div>
-          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl">At DPC (awaiting dispatch)</span><span class="prog-cnt">${atDpc}</span></div><div class="prog-bar"><div class="prog-fill pf-blue" style="width:${total>0?Math.round(atDpc/total*100):0}%"></div></div></div>
-          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl">DPC Dispatched (in transit to godown)</span><span class="prog-cnt">${inTransit}</span></div><div class="prog-bar"><div class="prog-fill pf-purple" style="width:${total>0?Math.round(inTransit/total*100):0}%"></div></div></div>
-          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl">Delivered to Godown</span><span class="prog-cnt">${delivered}</span></div><div class="prog-bar"><div class="prog-fill pf-green" style="width:${total>0?Math.round(delivered/total*100):0}%"></div></div></div>
-          ${delayed>0?`<div class="prog-wrap"><div class="prog-top"><span class="prog-lbl" style="color:var(--md-error)">⚠ Delayed</span><span class="prog-cnt" style="color:var(--md-error)">${delayed}</span></div><div class="prog-bar"><div class="prog-fill pf-red" style="width:${total>0?Math.round(delayed/total*100):0}%"></div></div></div>`:''}
+          ${[['Dispatched (en route to DPC)',dispatched,'pf-amber'],['At DPC (awaiting dispatch)',atDpc,'pf-blue'],['DPC Dispatched (in transit)',inTransit,'pf-purple'],['Delivered to Godown',delivered,'pf-green'],delayed>0?['⚠ Delayed (4h+)',delayed,'pf-red']:null,worried>0?['🆘 Worry (12h+)',worried,'pf-red']:null].filter(Boolean).map(([lbl,cnt,cls])=>`
+          <div class="prog-wrap"><div class="prog-top"><span class="prog-lbl" style="${cls==='pf-red'?'color:var(--md-error)':''}">${lbl}</span><span class="prog-cnt" style="${cls==='pf-red'?'color:var(--md-error)':''}">${cnt}</span></div><div class="prog-bar"><div class="prog-fill ${cls}" style="width:${total>0?Math.round(cnt/total*100):0}%"></div></div></div>`).join('')}
         </div>
       </div>
+
+      <!-- PAGINATED VEHICLE TABLE -->
       <div class="md-card">
-        <div class="card-header">
-          <div class="card-title"><span class="mi sm">history</span> Recent Dispatches</div>
-          <button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch</button>
+        <div class="card-header" style="flex-wrap:wrap;gap:8px">
+          <div class="card-title" style="display:flex;align-items:center;gap:8px">
+            <span class="mi sm">table_view</span>
+            <span>${filterLabel}</span>
+            <span style="background:var(--md-primary-light);color:var(--md-primary);padding:2px 8px;border-radius:var(--r50);font-size:11px;font-weight:700">${tableVehicles.length}</span>
+            ${S.vFilter!=='all'?`<button class="md-btn md-btn-text xs" onclick="setVFilter('all')" style="color:var(--md-error);padding:0 6px">✕ Clear filter</button>`:''}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <div class="search-wrap"><span class="mi search-icon">search</span><input class="md-input" placeholder="Search…" value="${esc(S.search)}" oninput="S.search=this.value;S.vPage=1;renderPage()" style="height:32px;font-size:12px;width:160px"></div>
+            <select class="md-select" onchange="S.vPageSize=+this.value;S.vPage=1;renderPage()" style="height:32px;font-size:12px;width:80px">
+              ${[10,15,25,50].map(n=>`<option value="${n}" ${S.vPageSize===n?'selected':''}>${n} / page</option>`).join('')}
+            </select>
+            <button class="md-btn md-btn-outlined sm" onclick="exportCSV()"><span class="mi sm">download</span> CSV</button>
+            <button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch</button>
+          </div>
         </div>
         <div class="card-body np">
           <div class="tw"><table class="md-table">
-            <thead><tr><th>Vehicle</th><th>Driver</th><th>DPC</th><th>Bags</th><th>Status</th></tr></thead>
+            <thead><tr>
+              ${sortTh('vehicleNumber','Vehicle')}
+              ${sortTh('driverName','Driver')}
+              ${sortTh('dpcName','DPC')}
+              ${sortTh('unloadingPoint','Godown')}
+              ${sortTh('bags','Bags')}
+              <th>Status</th>
+              <th>Delay</th>
+              <th style="text-align:right">Action</th>
+            </tr></thead>
             <tbody>
-              ${recent.length===0?`<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No vehicles yet</td></tr>`:''}
-              ${recent.map(x=>{const st=statusOf(x);return`<tr><td class="vnum-cell">${esc(x.vehicleNumber)}</td><td>${esc(x.driverName)}</td><td>${esc(x.dpcName)}</td><td>${x.bags}</td><td><span class="chip ${st.cls}">${st.text}</span></td></tr>`;}).join('')}
+              ${pageVehicles.length===0?`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--md-on-surface-variant)">No vehicles match this filter</td></tr>`:''}
+              ${pageVehicles.map(x=>{
+                const st=statusOf(x);
+                const del=isDelayed(x), wor=isWorry(x);
+                const hrs=getDelayHours(x);
+                const delayCell=x.godownArrival?'<span style="color:var(--md-success);font-size:11px">✓ Done</span>':hrs>0?`<span style="color:${wor?'#d93025':'#e37400'};font-weight:600;font-size:12px">${hrs}h ${wor?'🆘':'⚠'}</span>`:'<span style="color:var(--md-on-surface-variant);font-size:11px">—</span>';
+                return `<tr style="${wor?'background:#fff8f8':del?'background:#fffdf0':''}">
+                  <td class="vnum-cell" onclick="openView('${x.id}')" style="cursor:pointer">${esc(x.vehicleNumber)}</td>
+                  <td>${esc(x.driverName)}<div style="font-size:11px;color:var(--md-on-surface-variant)">${esc(x.driverMobile)}</div></td>
+                  <td style="font-size:12px">${esc(x.dpcName)}</td>
+                  <td style="font-size:12px">${esc(x.unloadingPoint)}</td>
+                  <td style="font-family:var(--fm)">${x.bags}</td>
+                  <td><span class="chip ${st.cls}">${st.text}</span></td>
+                  <td>${delayCell}</td>
+                  <td class="action-cell">
+                    <button class="md-btn md-btn-text xs" onclick="openView('${x.id}')">View</button>
+                    <button class="md-btn md-btn-text xs" style="color:var(--md-error)" onclick="deleteVehicle('${x.id}')"><span class="mi sm">delete</span></button>
+                  </td>
+                </tr>`;
+              }).join('')}
             </tbody>
           </table></div>
         </div>
+        <!-- PAGINATION -->
+        ${totalPages>1?`
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--md-outline-variant);flex-wrap:wrap;gap:8px">
+          <div style="font-size:12px;color:var(--md-on-surface-variant)">
+            Showing ${((S.vPage-1)*S.vPageSize)+1}–${Math.min(S.vPage*S.vPageSize,tableVehicles.length)} of ${tableVehicles.length}
+          </div>
+          <div style="display:flex;gap:4px;align-items:center">
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=1;renderPage()" ${S.vPage===1?'disabled':''}>«</button>
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage--;renderPage()" ${S.vPage===1?'disabled':''}>‹</button>
+            ${Array.from({length:Math.min(5,totalPages)},(_,i)=>{
+              let pg; if(totalPages<=5){pg=i+1;}else if(S.vPage<=3){pg=i+1;}else if(S.vPage>=totalPages-2){pg=totalPages-4+i;}else{pg=S.vPage-2+i;}
+              return `<button class="md-btn ${pg===S.vPage?'md-btn-filled':'md-btn-outlined'} xs" onclick="S.vPage=${pg};renderPage()">${pg}</button>`;
+            }).join('')}
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage++;renderPage()" ${S.vPage===totalPages?'disabled':''}>›</button>
+            <button class="md-btn md-btn-outlined xs" onclick="S.vPage=${totalPages};renderPage()" ${S.vPage===totalPages?'disabled':''}>»</button>
+          </div>
+        </div>`:''}
       </div>
     </div>
+
     <div>
       <div class="md-card" style="margin-bottom:20px">
         <div class="card-header"><div class="card-title"><span class="mi sm">donut_small</span> Status Overview</div></div>
@@ -1064,19 +1275,25 @@ function renderAdminDash() {
       <div class="md-card" style="margin-bottom:20px">
         <div class="card-header"><div class="card-title"><span class="mi sm">factory</span> Top DPCs</div></div>
         <div class="card-body"><div class="rank-list">
-          ${topDpcs.map(([n,c],i)=>`<div class="rank-item"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
+          ${topDpcs.map(([n,c],i)=>`<div class="rank-item" onclick="S.search='${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
           ${topDpcs.length===0?`<div class="empty-state" style="padding:16px"><p>No data</p></div>`:''}
         </div></div>
       </div>
       <div class="md-card">
         <div class="card-header"><div class="card-title"><span class="mi sm">warehouse</span> Top Godowns</div></div>
         <div class="card-body"><div class="rank-list">
-          ${topGods.map(([n,c],i)=>`<div class="rank-item"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
+          ${topGods.map(([n,c],i)=>`<div class="rank-item" onclick="S.search='${n}';S.vFilter='all';S.vPage=1;renderPage()" style="cursor:pointer"><div class="rank-num">${i+1}</div><div class="rank-label" title="${esc(n)}">${esc(n)}</div><div class="rank-val">${c}</div></div>`).join('')}
           ${topGods.length===0?`<div class="empty-state" style="padding:16px"><p>No data</p></div>`:''}
         </div></div>
       </div>
     </div>
   </div>`;
+}
+
+function setVSort(col) {
+  if(S.vSort.col===col) S.vSort.dir = S.vSort.dir==='asc'?'desc':'asc';
+  else { S.vSort.col=col; S.vSort.dir='desc'; }
+  renderPage();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1274,19 +1491,25 @@ function renderVehicleListPage(type) {
   else if (type==='delivered') { items=items.filter(x=>x.godownArrival); title='Delivered to Godown'; empty='No deliveries confirmed.'; }
   const q=S.search.toLowerCase();
   if (q) items=items.filter(x=>[x.vehicleNumber,x.driverName,x.dpcName,x.unloadingPoint,x.paddyVariety].some(f=>(f||'').toLowerCase().includes(q)));
+  const ps=S.vPageSize||15, total=items.length, tp=Math.max(1,Math.ceil(total/ps));
+  if(S.vPage>tp) S.vPage=tp;
+  const pg=items.slice((S.vPage-1)*ps, S.vPage*ps);
+  const pager=tp>1?`<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--md-outline-variant);flex-wrap:wrap;gap:8px"><div style="font-size:12px;color:var(--md-on-surface-variant)">Showing ${(S.vPage-1)*ps+1}–${Math.min(S.vPage*ps,total)} of ${total}</div><div style="display:flex;gap:4px"><button class="md-btn md-btn-outlined xs" onclick="S.vPage=1;renderPage()" ${S.vPage===1?'disabled':''}>«</button><button class="md-btn md-btn-outlined xs" onclick="S.vPage--;renderPage()" ${S.vPage===1?'disabled':''}>‹</button>${Array.from({length:Math.min(5,tp)},(_,i)=>{let p=i+1;if(tp>5){if(S.vPage<=3)p=i+1;else if(S.vPage>=tp-2)p=tp-4+i;else p=S.vPage-2+i;}return `<button class="md-btn ${p===S.vPage?'md-btn-filled':'md-btn-outlined'} xs" onclick="S.vPage=${p};renderPage()">${p}</button>`;}).join('')}<button class="md-btn md-btn-outlined xs" onclick="S.vPage++;renderPage()" ${S.vPage===tp?'disabled':''}>›</button><button class="md-btn md-btn-outlined xs" onclick="S.vPage=${tp};renderPage()" ${S.vPage===tp?'disabled':''}>»</button></div></div>`:'';
   return `
   <div class="md-card">
     <div class="card-header">
-      <div class="card-title"><span class="mi sm">local_shipping</span> ${title} <span style="background:var(--md-primary-light);color:var(--md-primary);padding:2px 8px;border-radius:var(--r50);font-size:11px;font-weight:700;margin-left:4px">${items.length}</span></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div class="search-wrap"><span class="mi search-icon">search</span><input class="md-input" placeholder="Search…" value="${esc(S.search)}" oninput="S.search=this.value;renderPage()" style="height:36px;font-size:13px"></div>
+      <div class="card-title"><span class="mi sm">local_shipping</span> ${title} <span style="background:var(--md-primary-light);color:var(--md-primary);padding:2px 8px;border-radius:var(--r50);font-size:11px;font-weight:700;margin-left:4px">${total}</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <div class="search-wrap"><span class="mi search-icon">search</span><input class="md-input" placeholder="Search…" value="${esc(S.search)}" oninput="S.search=this.value;S.vPage=1;renderPage()" style="height:36px;font-size:13px"></div>
+        <select class="md-select" onchange="S.vPageSize=+this.value;S.vPage=1;renderPage()" style="height:36px;font-size:12px;width:80px">${[10,15,25,50].map(n=>`<option value="${n}" ${ps===n?'selected':''}>${n}/pg</option>`).join('')}</select>
         <button class="md-btn md-btn-outlined sm" onclick="exportCSV()"><span class="mi sm">download</span> CSV</button>
-        ${S.user.role==='entry'||S.user.role==='admin'?`<button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch</button>`:``}
+        ${S.user.role==='entry'||S.user.role==='admin'?`<button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch</button>`:''}
       </div>
     </div>
     <div class="card-body">
-      ${items.length===0?`<div class="empty-state"><div class="empty-icon"><span class="mi xl">local_shipping</span></div><p>${empty}</p></div>`:`<div class="v-list">${items.map(x=>renderVCard(x,S.user.role)).join('')}</div>`}
+      ${pg.length===0?`<div class="empty-state"><div class="empty-icon"><span class="mi xl">local_shipping</span></div><p>${empty}</p></div>`:`<div class="v-list">${pg.map(x=>renderVCard(x,S.user.role)).join('')}</div>`}
     </div>
+    ${pager}
   </div>`;
 }
 
@@ -1564,9 +1787,10 @@ function renderUsersPage() {
   <div class="md-card">
     <div class="card-header">
       <div class="card-title"><span class="mi sm">group</span> All Officers</div>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="md-btn md-btn-outlined sm" onclick="openAddUser('dpc')"><span class="mi sm">add</span> Add DPC Officer</button>
         <button class="md-btn md-btn-filled sm" onclick="openAddUser('godown')"><span class="mi sm">add</span> Add Godown Officer</button>
+        <button class="md-btn md-btn-outlined sm" onclick="exportUsersBundle()" title="Share user accounts to other devices (offline)"><span class="mi sm">share</span> Export for Offline</button>
       </div>
     </div>
     <div class="card-body np"><div class="tw"><table class="md-table">
@@ -1906,7 +2130,7 @@ function toggleAssignDropdown() {
   if (godW) godW.style.display = r === 'godown' ? '' : 'none';
 }
 
-function saveOfficer(editId) {
+async function saveOfficer(editId) {
   // Collect all form values while modal DOM is still alive
   const nameEl     = document.getElementById('au-name');
   const mobEl      = document.getElementById('au-mob');
@@ -1973,16 +2197,23 @@ function saveOfficer(editId) {
     record.godownName = godObj ? godObj.name : godId;
   }
 
-  // Save user — Firestore (no password) + password in localStorage
-  DB.saveUser(record).then(() => {
+  // Pre-compute hash for immediate local cache (so this device also gets the hash right away)
+  const newPass = record.password;
+  const passwordHash = newPass
+    ? await hashPassword(newPass)
+    : (existing ? existing.passwordHash || '' : '');
+  const fullRecord = { ...record, passwordHash };
+
+  // Save user — hash stored in Firestore, plaintext cached locally
+  DB.saveUser(fullRecord).then(() => {
     S.users = DB._lget('users');
     if (['users','dpc_centers','godown_centers'].includes(S.page)) renderPage();
   });
 
-  // Update local cache immediately, close modal and re-render without waiting
-  DB.savePassword(record.username, record.password);
+  // Immediate local update for UI responsiveness
+  if (newPass) DB.savePassword(record.username, newPass);
   const updatedUsers = allUsers.filter(u => u.id !== recordId);
-  updatedUsers.unshift(record);
+  updatedUsers.unshift(fullRecord);
   DB._lset('users', updatedUsers);
   closeModal();
   S.users = DB._lget('users');
@@ -2007,6 +2238,130 @@ function deleteUser(id) {
   S.users = DB._lget('users');
   snack('Officer deleted', 'warn');
   renderPage();
+}
+
+// ═══════════════════════════════════════════════════════════
+// OFFLINE USER EXPORT / IMPORT
+// Allows admin to share user accounts to devices without
+// internet access. Users are exported as a .vtp bundle file.
+// ═══════════════════════════════════════════════════════════
+async function exportUsersBundle() {
+  const users = DB._lget('users');
+  if (!users.length) { snack('No officers to export', 'warn'); return; }
+
+  // Attach the local plain-text passwords for any users that have them
+  const exportUsers = users.map(u => ({
+    ...u,
+    password: DB.getPassword(u.username) || u.password || '',
+  }));
+
+  const bundle = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    exportedBy: S.user ? S.user.name : 'Admin',
+    users: exportUsers,
+  };
+
+  const filename = 'vehicletrack-users-' + new Date().toISOString().slice(0,10) + '.vtp';
+  const json = JSON.stringify(bundle, null, 2);
+  const blob = new Blob([json], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  // Show clear instructions after export
+  openModal(`<div class="md-modal">
+    <div class="modal-head">
+      <div class="modal-title"><span class="mi sm" style="color:var(--md-success)">check_circle</span> Exported ${exportUsers.length} Officers</div>
+      <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
+    </div>
+    <div class="modal-body">
+      <div style="background:#e6f4ea;border-radius:8px;padding:14px 16px;margin-bottom:16px">
+        <div style="font-weight:600;color:#137333;margin-bottom:4px">File downloaded: <span style="font-family:monospace">${filename}</span></div>
+        <div style="font-size:13px;color:#137333">Check your Downloads folder or notification bar</div>
+      </div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:10px">How to share with officers:</div>
+      <div style="display:flex;flex-direction:column;gap:10px;font-size:13px">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">1</span>
+          <span>Find <b>${filename}</b> in your <b>Downloads</b> folder</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">2</span>
+          <span>Share it via <b>WhatsApp / Bluetooth / USB / Email</b> to each officer's phone</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="background:var(--md-primary);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">3</span>
+          <span>Officer opens the app → taps <b>"Import Users (Offline)"</b> → selects the file → logs in</span>
+        </div>
+      </div>
+      <div style="margin-top:16px;padding:10px 14px;background:var(--md-bg);border-radius:8px;font-size:12px;color:var(--md-on-surface-variant)">
+        <span class="mi sm" style="vertical-align:middle;font-size:14px">info</span>
+        Re-export and re-share whenever you add new officers or change passwords.
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="md-btn md-btn-filled" onclick="closeModal()">Done</button>
+    </div>
+  </div>`);
+}
+
+async function importUsersBundle(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = ''; // reset so same file can be re-imported
+
+  try {
+    const text = await file.text();
+    const bundle = JSON.parse(text);
+    if (!bundle.users || !Array.isArray(bundle.users)) throw new Error('Invalid file — not a VehicleTrack export');
+
+    const incoming = bundle.users;
+    const existing = DB._lget('users');
+
+    let added = 0, updated = 0;
+    const importedNames = [];
+    for (const u of incoming) {
+      if (!u.id || !u.username) continue;
+      // Always store plaintext password for login fallback
+      if (u.password) {
+        DB.savePassword(u.username, u.password);
+        // Also compute hash for hash-based login
+        u.passwordHash = await hashPassword(u.password);
+      }
+      const idx = existing.findIndex(x => x.id === u.id);
+      if (idx >= 0) { existing[idx] = u; updated++; }
+      else { existing.unshift(u); added++; }
+      importedNames.push(u.name);
+    }
+    DB._lset('users', existing);
+
+    openModal(`<div class="md-modal">
+      <div class="modal-head">
+        <div class="modal-title"><span class="mi sm" style="color:var(--md-success)">check_circle</span> Import Successful</div>
+        <button class="modal-close-btn" onclick="closeModal()"><span class="mi sm">close</span></button>
+      </div>
+      <div class="modal-body">
+        <div style="background:#e6f4ea;border-radius:8px;padding:14px 16px;margin-bottom:16px;font-size:14px;color:#137333">
+          <b>${added} new</b> officer${added!==1?'s':''} added${updated?`, <b>${updated}</b> updated`:''}. You can now log in.
+        </div>
+        <div style="font-size:13px;color:var(--md-on-surface-variant);margin-bottom:8px">Imported accounts:</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${importedNames.map(n=>`<div style="display:flex;align-items:center;gap:8px;font-size:13px"><span class="mi sm" style="color:var(--md-success)">person</span>${esc(n)}</div>`).join('')}
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="md-btn md-btn-filled" onclick="closeModal()">OK — Go to Login</button>
+      </div>
+    </div>`);
+  } catch(e) {
+    snack('Import failed: ' + e.message, 'err');
+  }
 }
 
 // Add Center Modal
@@ -2344,8 +2699,8 @@ function renderFirebaseTestPage() {
   return `
   <div class="kpi-grid g3" style="margin-bottom:24px">
     ${statusCard(configured?'green':'red','settings','Config',configured?'Configured':'Not Set',configured?'All 6 keys present':'Fill in the form below')}
-    ${statusCard(online?'green':'red','cloud','Connection',online?'Connected':'Not Connected', online?'Firestore reachable': initErr ? esc(initErr.slice(0,60)) : 'Config not set')}
-    ${statusCard('blue','science','Tests','—','Run tests after connecting')}
+    ${statusCard(online?'green':'red','cloud','Connection',online?'Connected':'Not Connected', online?'Firestore REST API reachable': initErr ? esc(initErr.slice(0,60)) : 'Config not set')}
+    ${statusCard('teal','code','Mode','REST API','No SDK — uses browser fetch()')}
   </div>
 
   <!-- ── FIREBASE CONFIG FORM ─────────────────────────── -->
@@ -2642,6 +2997,300 @@ async function previewFirestoreData() {
   html += '</div>';
   el.innerHTML = html;
 }
+
+
+// ═══════════════════════════════════════════════════════════
+// WORRY LIST PAGE
+// ═══════════════════════════════════════════════════════════
+function renderWorryList() {
+  const v = S.vehicles;
+  const worried = v.filter(x=>isWorry(x)).sort((a,b)=>getDelayHours(b)-getDelayHours(a));
+  const delayed12to24 = worried.filter(x=>getDelayHours(x)<24);
+  const delayed24plus = worried.filter(x=>getDelayHours(x)>=24);
+  const lastMs = x => x._dpcDispatchMs || x._dpcMs || x._dispatchMs || 0;
+  return `
+  <div style="background:#fce8e6;border:2px solid #d93025;border-radius:var(--r12);padding:16px 20px;margin-bottom:24px;display:flex;align-items:flex-start;gap:12px">
+    <span class="mi xl" style="color:#d93025;flex-shrink:0">crisis_alert</span>
+    <div>
+      <div style="font-weight:700;color:#d93025;font-size:16px">Worry List — Vehicles Delayed 12+ Hours</div>
+      <div style="font-size:13px;color:#b31412;margin-top:4px">These vehicles have had no movement recorded for over 12 hours. Immediate follow-up with drivers and field officers is required.</div>
+    </div>
+  </div>
+
+  <div class="kpi-grid g3" style="margin-bottom:24px">
+    <div class="kpi-card kpi-red">
+      <div class="kpi-icon"><span class="mi lg">crisis_alert</span></div>
+      <div class="kpi-label">Total Worry Vehicles</div>
+      <div class="kpi-val">${worried.length}</div>
+      <div class="kpi-sub">12+ hours no movement</div>
+    </div>
+    <div class="kpi-card kpi-amber">
+      <div class="kpi-icon"><span class="mi lg">schedule</span></div>
+      <div class="kpi-label">12–24 Hours</div>
+      <div class="kpi-val">${delayed12to24.length}</div>
+      <div class="kpi-sub">Critical — follow up now</div>
+    </div>
+    <div class="kpi-card" style="background:#fff0f0;border-left:4px solid #7b0000">
+      <div class="kpi-icon"><span class="mi lg" style="color:#7b0000">warning_amber</span></div>
+      <div class="kpi-label">24+ Hours</div>
+      <div class="kpi-val" style="color:#7b0000">${delayed24plus.length}</div>
+      <div class="kpi-sub">Extreme — escalate immediately</div>
+    </div>
+  </div>
+
+  ${worried.length===0?`
+  <div class="md-card">
+    <div class="card-body" style="text-align:center;padding:48px">
+      <span class="mi xl" style="color:var(--md-success);font-size:48px;display:block;margin-bottom:12px">check_circle</span>
+      <div style="font-size:16px;font-weight:500;color:var(--md-success)">No vehicles in the worry list</div>
+      <div style="font-size:13px;color:var(--md-on-surface-variant);margin-top:6px">All vehicles have had movement within the last 12 hours</div>
+    </div>
+  </div>`:``}
+
+  ${worried.length>0?`
+  <div class="md-card">
+    <div class="card-header">
+      <div class="card-title" style="color:#d93025"><span class="mi sm">crisis_alert</span> Worry Vehicles — Sorted by Delay (Worst First)</div>
+      <button class="md-btn md-btn-outlined sm" onclick="exportWorryPDF()"><span class="mi sm">picture_as_pdf</span> Export PDF</button>
+    </div>
+    <div class="card-body np">
+      <div class="tw"><table class="md-table">
+        <thead>
+          <tr style="background:#fce8e6">
+            <th>Vehicle No.</th>
+            <th>Driver</th>
+            <th>Mobile</th>
+            <th>DPC</th>
+            <th>Godown</th>
+            <th>Last Status</th>
+            <th>Last Activity</th>
+            <th style="color:#d93025">Delay</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${worried.map(x=>{
+            const hrs=getDelayHours(x);
+            const extreme=hrs>=24;
+            const lastAct = x.dpcDispatched||x.dpcArrival||x.dispatchedAt||'—';
+            const st=statusOf(x);
+            return `<tr style="background:${extreme?'#fff0f0':'#fff8f8'}">
+              <td class="vnum-cell" onclick="openView('${x.id}')" style="cursor:pointer">${esc(x.vehicleNumber)}</td>
+              <td style="font-weight:500">${esc(x.driverName)}</td>
+              <td>
+                <a href="tel:${esc(x.driverMobile)}" style="color:var(--md-primary);font-family:var(--fm);font-size:12px;text-decoration:none">
+                  <span class="mi sm">call</span> ${esc(x.driverMobile)}
+                </a>
+              </td>
+              <td style="font-size:12px">${esc(x.dpcName)}</td>
+              <td style="font-size:12px">${esc(x.unloadingPoint)}</td>
+              <td><span class="chip ${st.cls}">${st.text}</span></td>
+              <td style="font-size:11px;color:var(--md-on-surface-variant)">${esc(lastAct)}</td>
+              <td>
+                <span style="font-weight:700;font-size:14px;color:${extreme?'#7b0000':'#d93025'};font-family:var(--fm)">
+                  ${hrs}h ${extreme?'🆘':'⚠'}
+                </span>
+              </td>
+              <td class="action-cell">
+                <button class="md-btn md-btn-text xs" onclick="openView('${x.id}')">Details</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>
+  </div>`:``}`;
+}
+
+function exportWorryPDF() {
+  if(!window.jspdf){snack('jsPDF loading…','warn');return;}
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF();
+  doc.setFontSize(16);doc.setFont(undefined,'bold');
+  doc.setTextColor(217,48,37);
+  doc.text('WORRY LIST — Vehicles Delayed 12+ Hours',14,16);
+  doc.setTextColor(0,0,0);
+  doc.setFontSize(10);doc.setFont(undefined,'normal');
+  doc.text(`Generated: ${new Date().toLocaleString('en-IN')} | Total: ${S.vehicles.filter(x=>isWorry(x)).length} vehicles`,14,24);
+  const rows=S.vehicles.filter(x=>isWorry(x))
+    .sort((a,b)=>getDelayHours(b)-getDelayHours(a))
+    .map(x=>[x.vehicleNumber,x.driverName,x.driverMobile,x.dpcName,x.unloadingPoint,statusOf(x).text,getDelayHours(x)+'h']);
+  doc.autoTable({startY:30,
+    head:[['Vehicle','Driver','Mobile','DPC','Godown','Status','Delay']],
+    body:rows,
+    styles:{fontSize:9},
+    headStyles:{fillColor:[217,48,37],textColor:255,fontStyle:'bold'},
+    alternateRowStyles:{fillColor:[252,232,230]}
+  });
+  doc.save(`worry_list_${new Date().toISOString().slice(0,10)}.pdf`);
+  snack('Worry list PDF exported');
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// CONTROL ROOM — Admin full control
+// ═══════════════════════════════════════════════════════════
+function renderControlRoom() {
+  const v = S.vehicles;
+  const users = DB._lget('users');
+  const total=v.length;
+  const dispatched=v.filter(x=>!x.dpcArrival).length;
+  const atDpc=v.filter(x=>x.dpcArrival&&!x.dpcDispatched).length;
+  const inTransit=v.filter(x=>x.dpcDispatched&&!x.godownArrival).length;
+  const delivered=v.filter(x=>x.godownArrival).length;
+  const delayed=v.filter(x=>isDelayed(x)).length;
+  const worried=v.filter(x=>isWorry(x)).length;
+  const totalBags=v.reduce((a,b)=>a+(+b.bags||0),0);
+  const gradeA=v.filter(x=>x.gradeABags).reduce((a,b)=>a+(+b.gradeABags||0),0);
+  const gradeC=v.filter(x=>x.gradeCBags).reduce((a,b)=>a+(+b.gradeCBags||0),0);
+
+  // Per-DPC breakdown
+  const dpcBreakdown = {};
+  v.forEach(x=>{
+    const d=x.dpcName||'Unknown';
+    if(!dpcBreakdown[d]) dpcBreakdown[d]={name:d,total:0,dispatched:0,atDpc:0,inTransit:0,delivered:0,delayed:0,worried:0,bags:0,gradeA:0,gradeC:0};
+    dpcBreakdown[d].total++;
+    dpcBreakdown[d].bags+=(+x.bags||0);
+    dpcBreakdown[d].gradeA+=(+x.gradeABags||0);
+    dpcBreakdown[d].gradeC+=(+x.gradeCBags||0);
+    if(!x.dpcArrival) dpcBreakdown[d].dispatched++;
+    else if(!x.dpcDispatched) dpcBreakdown[d].atDpc++;
+    else if(!x.godownArrival) dpcBreakdown[d].inTransit++;
+    else dpcBreakdown[d].delivered++;
+    if(isDelayed(x)) dpcBreakdown[d].delayed++;
+    if(isWorry(x)) dpcBreakdown[d].worried++;
+  });
+  const dpcRows=Object.values(dpcBreakdown).sort((a,b)=>b.total-a.total);
+
+  // Per-Godown breakdown
+  const godBreakdown = {};
+  v.forEach(x=>{
+    const g=x.unloadingPoint||'Unknown';
+    if(!godBreakdown[g]) godBreakdown[g]={name:g,incoming:0,delivered:0,bags:0,gradeA:0,gradeC:0};
+    if(x.dpcDispatched&&!x.godownArrival) godBreakdown[g].incoming++;
+    if(x.godownArrival){godBreakdown[g].delivered++;godBreakdown[g].bags+=(+x.bags||0);godBreakdown[g].gradeA+=(+x.gradeABags||0);godBreakdown[g].gradeC+=(+x.gradeCBags||0);}
+  });
+  const godRows=Object.values(godBreakdown).sort((a,b)=>b.delivered-a.delivered);
+
+  return `
+  <!-- LIVE SUMMARY STRIP -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px">
+    ${[
+      ['local_shipping',total,'Total','var(--md-primary)'],
+      ['check_circle',delivered,'Delivered','var(--md-success)'],
+      ['crisis_alert',worried,'Worry (12h+)','#d93025'],
+      ['warning',delayed,'Delayed (4h+)','#e37400'],
+    ].map(([icon,val,lbl,color])=>`
+    <div style="background:white;border-radius:var(--r8);padding:14px 16px;box-shadow:var(--md-elev1);display:flex;align-items:center;gap:12px">
+      <span class="mi lg" style="color:${color}">${icon}</span>
+      <div><div style="font-size:22px;font-weight:700;color:${color};font-family:var(--fm)">${val}</div><div style="font-size:11px;color:var(--md-on-surface-variant);text-transform:uppercase;letter-spacing:.06em">${lbl}</div></div>
+    </div>`).join('')}
+  </div>
+
+  <!-- QUICK ACTIONS -->
+  <div class="md-card" style="margin-bottom:20px">
+    <div class="card-header"><div class="card-title"><span class="mi sm">bolt</span> Quick Actions</div></div>
+    <div class="card-body" style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="md-btn md-btn-filled sm" onclick="goTo('dispatch')"><span class="mi sm">add</span> Dispatch Vehicle</button>
+      <button class="md-btn md-btn-filled amber sm" onclick="goTo('worry_list')"><span class="mi sm">crisis_alert</span> Worry List (${worried})</button>
+      <button class="md-btn md-btn-filled green sm" onclick="goTo('analytics')"><span class="mi sm">bar_chart</span> Analytics</button>
+      <button class="md-btn md-btn-outlined sm" onclick="exportCSV()"><span class="mi sm">download</span> Export CSV</button>
+      <button class="md-btn md-btn-outlined sm" onclick="exportPDF()"><span class="mi sm">picture_as_pdf</span> Export PDF</button>
+      <button class="md-btn md-btn-outlined sm" onclick="exportWorryPDF()"><span class="mi sm">crisis_alert</span> Worry PDF</button>
+    </div>
+  </div>
+
+  <!-- BAGS SUMMARY -->
+  <div class="kpi-grid g3" style="margin-bottom:20px">
+    <div class="kpi-card kpi-blue"><div class="kpi-icon"><span class="mi lg">grain</span></div><div class="kpi-label">Total Bags</div><div class="kpi-val">${totalBags.toLocaleString()}</div><div class="kpi-sub">All vehicles</div></div>
+    <div class="kpi-card kpi-green"><div class="kpi-icon"><span class="mi lg">grain</span></div><div class="kpi-label">Grade A</div><div class="kpi-val">${gradeA.toLocaleString()}</div><div class="kpi-sub">DPC dispatched</div></div>
+    <div class="kpi-card kpi-amber"><div class="kpi-icon"><span class="mi lg">grain</span></div><div class="kpi-label">Grade C</div><div class="kpi-val">${gradeC.toLocaleString()}</div><div class="kpi-sub">DPC dispatched</div></div>
+  </div>
+
+  <!-- DPC BREAKDOWN TABLE -->
+  <div class="md-card" style="margin-bottom:20px">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">factory</span> DPC-wise Movement Status</div>
+      <span style="font-size:12px;color:var(--md-on-surface-variant)">${dpcRows.length} DPCs</span>
+    </div>
+    <div class="card-body np"><div class="tw"><table class="md-table">
+      <thead>
+        <tr>
+          <th>DPC Name</th>
+          <th>Total</th>
+          <th style="color:#e37400">En Route</th>
+          <th style="color:#1a73e8">At DPC</th>
+          <th style="color:#7b1fa2">In Transit</th>
+          <th style="color:#1e8e3e">Delivered</th>
+          <th>Bags</th>
+          <th style="color:#e37400">Delayed</th>
+          <th style="color:#d93025">Worry</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${dpcRows.map(d=>`<tr style="${d.worried>0?'background:#fff8f8':''}">
+          <td style="font-weight:500">${esc(d.name)}</td>
+          <td style="font-family:var(--fm);font-weight:600">${d.total}</td>
+          <td style="color:#e37400">${d.dispatched||'—'}</td>
+          <td style="color:#1a73e8">${d.atDpc||'—'}</td>
+          <td style="color:#7b1fa2">${d.inTransit||'—'}</td>
+          <td style="color:#1e8e3e;font-weight:500">${d.delivered||'—'}</td>
+          <td style="font-family:var(--fm);font-size:12px">${d.bags.toLocaleString()}</td>
+          <td>${d.delayed>0?`<span style="color:#e37400;font-weight:600">${d.delayed}</span>`:'—'}</td>
+          <td>${d.worried>0?`<span style="color:#d93025;font-weight:700">${d.worried} 🆘</span>`:'—'}</td>
+        </tr>`).join('')}
+        ${dpcRows.length===0?`<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No vehicle data</td></tr>`:''}
+      </tbody>
+    </table></div></div>
+  </div>
+
+  <!-- GODOWN BREAKDOWN TABLE -->
+  <div class="md-card" style="margin-bottom:20px">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">warehouse</span> Godown-wise Delivery Status</div>
+      <span style="font-size:12px;color:var(--md-on-surface-variant)">${godRows.length} Godowns</span>
+    </div>
+    <div class="card-body np"><div class="tw"><table class="md-table">
+      <thead><tr><th>Godown</th><th style="color:#7b1fa2">Incoming</th><th style="color:#1e8e3e">Delivered</th><th>Bags Received</th><th>Grade A</th><th>Grade C</th></tr></thead>
+      <tbody>
+        ${godRows.map(g=>`<tr>
+          <td style="font-weight:500">${esc(g.name)}</td>
+          <td style="color:#7b1fa2;font-weight:500">${g.incoming||'—'}</td>
+          <td style="color:#1e8e3e;font-weight:600">${g.delivered||'—'}</td>
+          <td style="font-family:var(--fm)">${g.bags.toLocaleString()}</td>
+          <td><span class="grade-box grade-a">${g.gradeA.toLocaleString()}</span></td>
+          <td><span class="grade-box grade-c">${g.gradeC.toLocaleString()}</span></td>
+        </tr>`).join('')}
+        ${godRows.length===0?`<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No delivery data</td></tr>`:''}
+      </tbody>
+    </table></div></div>
+  </div>
+
+  <!-- OFFICER STATUS -->
+  <div class="md-card">
+    <div class="card-header">
+      <div class="card-title"><span class="mi sm">people</span> Officer Status</div>
+      <button class="md-btn md-btn-outlined sm" onclick="goTo('users')"><span class="mi sm">manage_accounts</span> Manage</button>
+    </div>
+    <div class="card-body np"><div class="tw"><table class="md-table">
+      <thead><tr><th>Name</th><th>Role</th><th>Assigned To</th><th>Vehicles</th><th>Status</th></tr></thead>
+      <tbody>
+        ${users.map(u=>{
+          const vCount=u.role==='dpc'?v.filter(x=>x.dpcId===u.dpcId).length:v.filter(x=>x.godownId===u.godownId&&x.godownArrival).length;
+          return `<tr>
+            <td style="font-weight:500">${esc(u.name)}</td>
+            <td><span class="chip ${u.role==='dpc'?'chip-dpc':'chip-godown'}">${u.role==='dpc'?'DPC':'Godown'}</span></td>
+            <td style="font-size:12px">${esc(u.dpcName||u.godownName||'—')}</td>
+            <td style="font-family:var(--fm)">${vCount}</td>
+            <td><span class="chip ${u.active?'chip-active':'chip-inactive'}">${u.active?'Active':'Inactive'}</span></td>
+          </tr>`;
+        }).join('')}
+        ${users.length===0?`<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--md-on-surface-variant)">No officers added</td></tr>`:''}
+      </tbody>
+    </table></div></div>
+  </div>`;
+}
+
 
 </script>
 </body>
