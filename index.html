@@ -6,7 +6,8 @@
 <title>VehicleTrack Pro — Paddy Procurement Logistics</title>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
-<!-- Firestore accessed via REST API — no external SDK scripts needed -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
@@ -471,90 +472,28 @@ const FIREBASE_CONFIG = {
 // For photo cloud sync, enable Firebase Storage separately.
 
 // ═══════════════════════════════════════════════════════════
-// DATABASE LAYER  (Firestore REST API + localStorage)
-// No external SDK required — uses browser fetch() only
+// DATABASE LAYER  (Firebase SDK + localStorage fallback)
 // ═══════════════════════════════════════════════════════════
 const DB = {
-  _online: false, _subs: [], _changeCallbacks: {}, _initError: null,
+  _db: null, _online: false, _subs: [], _changeCallbacks: {}, _initError: null,
 
-  // ── Firestore REST helpers ────────────────────────────────
-  _base() {
-    return `https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents`;
-  },
-  async _req(method, path, body) {
-    const sep = path.includes('?') ? '&' : '?';
-    const url = `${this._base()}${path}${sep}key=${FIREBASE_CONFIG.apiKey}`;
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
-    if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(url, opts);
-    if (res.status === 404) return null;
-    if (res.status === 204) return null;
-    if (!res.ok) { const t = await res.text(); throw new Error(`${res.status}: ${t.slice(0,200)}`); }
-    return res.json();
-  },
-
-  // Firestore value → JS
-  _fval(v) {
-    if ('stringValue'    in v) return v.stringValue;
-    if ('integerValue'   in v) return Number(v.integerValue);
-    if ('doubleValue'    in v) return v.doubleValue;
-    if ('booleanValue'   in v) return v.booleanValue;
-    if ('nullValue'      in v) return null;
-    if ('timestampValue' in v) return v.timestampValue;
-    if ('arrayValue'     in v) return (v.arrayValue.values || []).map(x => this._fval(x));
-    if ('mapValue'       in v) {
-      const o = {};
-      for (const [k, fv] of Object.entries(v.mapValue.fields || {})) o[k] = this._fval(fv);
-      return o;
-    }
-    return null;
-  },
-  // JS → Firestore value
-  _tval(v) {
-    if (v === null || v === undefined) return { nullValue: null };
-    if (typeof v === 'boolean') return { booleanValue: v };
-    if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-    if (typeof v === 'string') return { stringValue: v };
-    if (Array.isArray(v)) return { arrayValue: { values: v.map(x => this._tval(x)) } };
-    if (typeof v === 'object') {
-      const fields = {};
-      for (const [k, fv] of Object.entries(v)) if (fv !== undefined) fields[k] = this._tval(fv);
-      return { mapValue: { fields } };
-    }
-    return { stringValue: String(v) };
-  },
-  // Firestore document → plain JS object with id
-  _docToJs(doc) {
-    const id = doc.name.split('/').pop();
-    const obj = { id };
-    for (const [k, v] of Object.entries(doc.fields || {})) obj[k] = this._fval(v);
-    return obj;
-  },
-  // Plain JS object → Firestore fields map (strips id, nulls, base64 photos)
-  _jsToFields(data) {
-    const PHOTOS = ['dpcPhoto','godownPhoto','dpcDispatchPhoto'];
-    const fields = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (k === 'id') continue;
-      if (v === null || v === undefined) continue;
-      if (PHOTOS.includes(k) && typeof v === 'string' && v.startsWith('data:')) continue;
-      fields[k] = this._tval(v);
-    }
-    return fields;
-  },
-  // PATCH a document (merge: all listed fields are updated)
-  async _patch(path, fields) {
-    if (!Object.keys(fields).length) return;
-    const mask = Object.keys(fields).map(f => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join('&');
-    // path has no query params yet; _req will add ?key=..., so we append mask via &
-    return this._req('PATCH', `${path}?${mask}`, { fields });
-  },
-
-  // ── init ─────────────────────────────────────────────────
   async init() {
-    this._online = false;
-    this._updateStatusUI(false);
-    return false;
+    try {
+      if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+      this._db = firebase.firestore();
+      this._db.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+      await Promise.race([
+        this._db.collection('_ping').doc('ping').get(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+      ]);
+      this._online = true;
+      this._updateStatusUI(true);
+      snack('Firebase connected — real-time sync active', 'ok');
+    } catch(e) {
+      this._initError = e.message || String(e);
+      this._updateStatusUI(false);
+    }
+    return this._online;
   },
 
   _updateStatusUI(online) {
@@ -580,9 +519,7 @@ const DB = {
           vs.forEach(v => PHOTO_FIELDS.forEach(f => { if (v[f]) delete v[f]; }));
           localStorage.setItem('vtp4_vehicles', JSON.stringify(vs));
         } catch(_) {}
-        try { localStorage.setItem('vtp4_' + k, JSON.stringify(d)); } catch(e2) {
-          console.error('localStorage write failed after cleanup:', k, e2.message);
-        }
+        try { localStorage.setItem('vtp4_' + k, JSON.stringify(d)); } catch(e2) {}
       }
     }
   },
@@ -598,8 +535,8 @@ const DB = {
   async getAll(col) {
     if (this._online) {
       try {
-        const result = await this._req('GET', `/${col}`);
-        const data = (result?.documents || []).map(d => this._docToJs(d));
+        const snap = await this._db.collection(col).get();
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         this._lset(col, data);
         return data;
       } catch(e) { console.warn('Firestore getAll failed:', e); }
@@ -609,23 +546,19 @@ const DB = {
 
   async set(col, id, data) {
     const PHOTO_FIELDS = ['dpcPhoto','godownPhoto','dpcDispatchPhoto'];
+    const fsData = { ...data };
+    PHOTO_FIELDS.forEach(f => { if (fsData[f] && String(fsData[f]).startsWith('data:')) delete fsData[f]; });
 
-    // Build localStorage copy (no photos, no nulls)
     const localItem = { id };
     Object.keys(data).forEach(k => {
-      if (data[k] !== null && !(PHOTO_FIELDS.includes(k) && String(data[k]||'').startsWith('data:'))) {
+      if (data[k] !== null && !(PHOTO_FIELDS.includes(k) && String(data[k]||'').startsWith('data:')))
         localItem[k] = data[k];
-      }
     });
     localItem._updatedAt = Date.now();
-
-    // Save photos separately
     PHOTO_FIELDS.forEach(f => {
-      if (data[f] && String(data[f]).startsWith('data:')) {
+      if (data[f] && String(data[f]).startsWith('data:'))
         try { localStorage.setItem('vtp4_photo_' + id + '_' + f, data[f]); } catch(_) {}
-      }
     });
-
     const local = this._lget(col);
     const idx = local.findIndex(x => x.id === id);
     if (idx >= 0) local[idx] = localItem; else local.unshift(localItem);
@@ -633,8 +566,13 @@ const DB = {
 
     if (this._online) {
       try {
-        const fields = this._jsToFields({ ...data, _updatedAt: Date.now() });
-        await this._patch(`/${col}/${id}`, fields);
+        Object.keys(fsData).forEach(k => {
+          if (fsData[k] === null) fsData[k] = firebase.firestore.FieldValue.delete();
+        });
+        await this._db.collection(col).doc(id).set(
+          { ...fsData, _updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
       } catch(e) { console.warn('Firestore set failed:', e); }
     }
     this._notify(col);
@@ -645,12 +583,12 @@ const DB = {
     const local = this._lget(col).filter(x => x.id !== id);
     this._lset(col, local);
     if (this._online) {
-      try { await this._req('DELETE', `/${col}/${id}`); } catch(e) {}
+      try { await this._db.collection(col).doc(id).delete(); } catch(e) {}
     }
     this._notify(col);
   },
 
-  // ── User CRUD (passwordHash in Firestore) ─────────────────
+  // ── User CRUD — password hash stored in Firestore ─────────
   async saveUser(record) {
     const plainPassword = record.password || '';
     let passwordHash = record.passwordHash || '';
@@ -664,9 +602,11 @@ const DB = {
 
     if (this._online) {
       try {
-        const fields = this._jsToFields(fsRecord);
-        await this._patch(`/users/${record.id}`, fields);
-      } catch(e) { console.warn('Firestore user save failed:', e); }
+        await this._db.collection('users').doc(record.id).set(
+          { ...fsRecord, _updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      } catch(e) { console.warn('Firestore saveUser failed:', e); }
     }
 
     const fullRecord = { ...record, passwordHash };
@@ -684,7 +624,7 @@ const DB = {
     if (u) this.deletePassword(u.username);
     this._lset('users', local.filter(x => x.id !== id));
     if (this._online) {
-      try { await this._req('DELETE', `/users/${id}`); } catch(e) {}
+      try { await this._db.collection('users').doc(id).delete(); } catch(e) {}
     }
     this._notify('users');
   },
@@ -693,10 +633,9 @@ const DB = {
     let users = [];
     if (this._online) {
       try {
-        const result = await this._req('GET', '/users');
-        users = (result?.documents || []).map(d => this._docToJs(d));
+        const snap = await this._db.collection('users').get();
+        users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       } catch(e) {
-        console.warn('Firestore users fetch failed, using cache:', e);
         users = this._lget('users');
       }
     } else {
@@ -711,21 +650,16 @@ const DB = {
     return users;
   },
 
-  // ── Polling-based live listeners (replaces Firestore SDK real-time) ───
   listen(col, cb) {
     cb(this._lget(col));
     this.onChange(col, cb);
     if (this._online) {
-      const poll = async () => {
-        try {
-          const result = await this._req('GET', `/${col}`);
-          const data = (result?.documents || []).map(d => this._docToJs(d));
-          this._lset(col, data);
-          cb(data);
-        } catch(e) {}
-      };
-      const id = setInterval(poll, 15000); // refresh every 15 s
-      this._subs.push(() => clearInterval(id));
+      const unsub = this._db.collection(col).onSnapshot(snap => {
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        this._lset(col, data);
+        cb(data);
+      }, err => console.warn('Firestore listener error:', err));
+      this._subs.push(unsub);
     }
   },
 
@@ -742,15 +676,11 @@ const DB = {
     hydrate(this._lget('users'));
     this.onChange('users', cb);
     if (this._online) {
-      const poll = async () => {
-        try {
-          const result = await this._req('GET', '/users');
-          const data = (result?.documents || []).map(d => this._docToJs(d));
-          hydrate(data);
-        } catch(e) {}
-      };
-      const id = setInterval(poll, 15000);
-      this._subs.push(() => clearInterval(id));
+      const unsub = this._db.collection('users').onSnapshot(snap => {
+        const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        hydrate(data);
+      }, err => console.warn('Firestore users listener error:', err));
+      this._subs.push(unsub);
     }
   },
 
